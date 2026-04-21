@@ -1,0 +1,87 @@
+:root {
+  font-family: Inter, system-ui, -apple-system, BlinkMacSystemFont, 'Segoe UI', sans-serif;
+  color: #111827;
+  background: #f3f4f6;
+}
+
+* { box-sizing: border-box; }
+
+body { margin: 0; background: #f3f4f6; }
+
+a { color: inherit; }
+
+button, input, select {
+  padding: 10px 12px;
+  border: 1px solid #d1d5db;
+  border-radius: 10px;
+  background: white;
+}
+
+button { cursor: pointer; }
+button.selected, .calendar-cell.selected, .spot.selected { outline: 2px solid #2563eb; }
+
+.page { max-width: 1400px; margin: 0 auto; padding: 16px; }
+.center { min-height: 100vh; display: flex; align-items: center; justify-content: center; }
+.card {
+  background: white;
+  border: 1px solid #e5e7eb;
+  border-radius: 16px;
+  padding: 16px;
+  box-shadow: 0 10px 30px rgba(0,0,0,0.04);
+}
+.auth { width: min(420px, 92vw); }
+.grid-2 { display: grid; gap: 16px; grid-template-columns: 1.3fr 1fr; }
+.stack { display: grid; gap: 10px; }
+.row { display: flex; gap: 10px; align-items: center; }
+.space { justify-content: space-between; }
+.topbar {
+  display: flex;
+  justify-content: space-between;
+  align-items: center;
+  margin-bottom: 16px;
+  gap: 12px;
+}
+.muted { color: #6b7280; font-size: 14px; }
+.error { color: #b91c1c; }
+.info { color: #075985; }
+.calendar {
+  display: grid;
+  grid-template-columns: repeat(7, 1fr);
+  gap: 6px;
+}
+.calendar-head {
+  text-align: center;
+  font-weight: 600;
+  color: #6b7280;
+  padding: 8px 0;
+}
+.calendar-cell {
+  min-height: 42px;
+  border-radius: 12px;
+}
+.calendar-fade { opacity: 0.4; }
+.inrange { background: #eff6ff; }
+.spots {
+  display: grid;
+  grid-template-columns: repeat(auto-fit, minmax(92px, 1fr));
+  gap: 10px;
+}
+.spot {
+  display: grid;
+  gap: 4px;
+  justify-items: center;
+  min-height: 72px;
+}
+.list { display: grid; gap: 10px; }
+.list-item {
+  display: flex;
+  justify-content: space-between;
+  gap: 12px;
+  padding: 12px;
+  border: 1px solid #e5e7eb;
+  border-radius: 12px;
+  background: #fafafa;
+}
+@media (max-width: 980px) {
+  .grid-2 { grid-template-columns: 1fr; }
+}
