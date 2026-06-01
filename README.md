@@ -16,6 +16,8 @@ pip install -r requirements.txt
 uvicorn main:app --reload
 ```
 
+Настройки можно передать через переменные окружения. Пример лежит в `backend/.env.example`.
+
 ## Запуск frontend
 
 ```bash
@@ -25,6 +27,7 @@ npm run dev
 ```
 
 По умолчанию frontend ждёт backend на `http://localhost:8000`.
+Настройки Vite лежат в `frontend/.env.example`.
 
 ## Тестовые пользователи
 

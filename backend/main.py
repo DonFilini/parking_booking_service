@@ -2,7 +2,8 @@ from __future__ import annotations
 
 from datetime import date, datetime, timedelta, time
 from enum import Enum
-from typing import Annotated, Optional, List
+import os
+from typing import Annotated, Optional
 from zoneinfo import ZoneInfo
 
 from fastapi import FastAPI, Depends, HTTPException, status
@@ -13,18 +14,28 @@ from argon2 import PasswordHasher
 from argon2.exceptions import VerifyMismatchError
 from pydantic import BaseModel, ConfigDict
 from sqlalchemy import (
-    create_engine, String, Integer, Boolean, Date, DateTime, ForeignKey, select, func
+    create_engine, String, Integer, Boolean, Date, DateTime, ForeignKey, select, func, text
 )
 from sqlalchemy.orm import declarative_base, relationship, sessionmaker, Session, Mapped, mapped_column
 
-DATABASE_URL = "sqlite:///./parking.db"
-SECRET_KEY = "change-me-in-production"
+DATABASE_URL = os.getenv("DATABASE_URL", "sqlite:///./parking.db")
+SECRET_KEY = os.getenv("SECRET_KEY", "change-me-in-production")
 ALGORITHM = "HS256"
-ACCESS_TOKEN_EXPIRE_HOURS = 12
-TZ = ZoneInfo("Europe/Amsterdam")
+ACCESS_TOKEN_EXPIRE_HOURS = int(os.getenv("ACCESS_TOKEN_EXPIRE_HOURS", "12"))
+TZ = ZoneInfo(os.getenv("APP_TIME_ZONE", "Europe/Amsterdam"))
+CORS_ORIGINS = [
+    origin.strip()
+    for origin in os.getenv(
+        "CORS_ORIGINS",
+        "http://localhost:5173,http://127.0.0.1:5173,http://localhost:5174,http://127.0.0.1:5174",
+    ).split(",")
+    if origin.strip()
+]
 
 engine = create_engine(
-    DATABASE_URL, connect_args={"check_same_thread": False}, future=True
+    DATABASE_URL,
+    connect_args={"check_same_thread": False} if DATABASE_URL.startswith("sqlite") else {},
+    future=True,
 )
 SessionLocal = sessionmaker(bind=engine, autoflush=False, autocommit=False, future=True)
 Base = declarative_base()
@@ -34,7 +45,7 @@ ph = PasswordHasher()
 app = FastAPI(title="Office Parking Booking Service")
 app.add_middleware(
     CORSMiddleware,
-    allow_origins=["*"],  # tighten in production
+    allow_origins=CORS_ORIGINS,
     allow_credentials=True,
     allow_methods=["*"],
     allow_headers=["*"],
@@ -62,8 +73,7 @@ class User(Base):
 class ParkingSpot(Base):
     __tablename__ = "spots"
     id: Mapped[int] = mapped_column(Integer, primary_key=True)
-    code: Mapped[str] = mapped_column(String(32), unique=True, index=True)
-    floor: Mapped[str] = mapped_column(String(32), default="A")
+    number: Mapped[int] = mapped_column(Integer, unique=True, index=True)
     active: Mapped[bool] = mapped_column(Boolean, default=True)
     created_at: Mapped[datetime] = mapped_column(DateTime, default=lambda: datetime.now(TZ))
 
@@ -83,6 +93,12 @@ class Booking(Base):
     spot: Mapped[ParkingSpot] = relationship(back_populates="bookings")
 
 
+class AppSetting(Base):
+    __tablename__ = "app_settings"
+    key: Mapped[str] = mapped_column(String(64), primary_key=True)
+    value: Mapped[str] = mapped_column(String(255))
+
+
 class UserCreate(BaseModel):
     username: str
     password: str
@@ -91,6 +107,7 @@ class UserCreate(BaseModel):
 
 
 class UserUpdate(BaseModel):
+    username: Optional[str] = None
     full_name: Optional[str] = None
     role: Optional[Role] = None
     active: Optional[bool] = None
@@ -108,22 +125,19 @@ class UserOut(BaseModel):
 
 
 class SpotCreate(BaseModel):
-    code: str
-    floor: str = "A"
+    number: int
     active: bool = True
 
 
 class SpotUpdate(BaseModel):
-    code: Optional[str] = None
-    floor: Optional[str] = None
+    number: Optional[int] = None
     active: Optional[bool] = None
 
 
 class SpotOut(BaseModel):
     model_config = ConfigDict(from_attributes=True)
     id: int
-    code: str
-    floor: str
+    number: int
     active: bool
     created_at: datetime
 
@@ -140,6 +154,14 @@ class BookingUpdate(BaseModel):
     end_date: Optional[date] = None
 
 
+class BookingSettingsOut(BaseModel):
+    bookings_enabled: bool
+
+
+class BookingSettingsUpdate(BaseModel):
+    bookings_enabled: bool
+
+
 class BookingOut(BaseModel):
     id: int
     user_id: int
@@ -147,7 +169,7 @@ class BookingOut(BaseModel):
     full_name: str
     role: Role
     spot_id: int
-    spot_code: str
+    spot_number: int
     start_date: date
     end_date: date
     created_at: datetime
@@ -264,7 +286,7 @@ def booking_to_out(booking: Booking) -> BookingOut:
         full_name=booking.user.full_name,
         role=Role(booking.user.role),
         spot_id=booking.spot_id,
-        spot_code=booking.spot.code,
+        spot_number=booking.spot.number,
         start_date=booking.start_date,
         end_date=booking.end_date,
         created_at=booking.created_at,
@@ -281,6 +303,23 @@ def get_user_by_id(db: Session, user_id: int) -> User | None:
 
 def get_spot_by_id(db: Session, spot_id: int) -> ParkingSpot | None:
     return db.get(ParkingSpot, spot_id)
+
+
+def get_setting(db: Session, key: str, default: str) -> str:
+    setting = db.get(AppSetting, key)
+    return setting.value if setting else default
+
+
+def set_setting(db: Session, key: str, value: str) -> None:
+    setting = db.get(AppSetting, key)
+    if setting:
+        setting.value = value
+    else:
+        db.add(AppSetting(key=key, value=value))
+
+
+def are_bookings_enabled(db: Session) -> bool:
+    return get_setting(db, "bookings_enabled", "true") == "true"
 
 
 def current_user(
@@ -372,8 +411,52 @@ def ensure_booking_allowed(db: Session, user: User, spot_id: int, start_date: da
 
 @app.on_event("startup")
 def startup():
+    migrate_spots_table()
     Base.metadata.create_all(bind=engine)
     seed_data()
+
+
+def migrate_spots_table():
+    if not DATABASE_URL.startswith("sqlite"):
+        return
+
+    with engine.begin() as conn:
+        table_exists = conn.scalar(
+            text("SELECT name FROM sqlite_master WHERE type = 'table' AND name = 'spots'")
+        )
+        if not table_exists:
+            return
+
+        columns = {row[1] for row in conn.execute(text("PRAGMA table_info(spots)"))}
+        if "number" in columns and "code" not in columns and "floor" not in columns:
+            return
+
+        if "number" not in columns:
+            conn.execute(text("ALTER TABLE spots ADD COLUMN number INTEGER"))
+            if "code" in columns:
+                conn.execute(text("""
+                    UPDATE spots
+                    SET number = CAST(REPLACE(code, 'P-', '') AS INTEGER)
+                    WHERE number IS NULL
+                """))
+            conn.execute(text("UPDATE spots SET number = id WHERE number IS NULL OR number = 0"))
+
+        conn.execute(text("""
+            CREATE TABLE IF NOT EXISTS spots_new (
+                id INTEGER NOT NULL,
+                number INTEGER NOT NULL,
+                active BOOLEAN NOT NULL,
+                created_at DATETIME NOT NULL,
+                PRIMARY KEY (id)
+            )
+        """))
+        conn.execute(text("""
+            INSERT INTO spots_new (id, number, active, created_at)
+            SELECT id, number, active, created_at FROM spots
+        """))
+        conn.execute(text("DROP TABLE spots"))
+        conn.execute(text("ALTER TABLE spots_new RENAME TO spots"))
+        conn.execute(text("CREATE UNIQUE INDEX IF NOT EXISTS ix_spots_number ON spots (number)"))
 
 
 def seed_data():
@@ -387,8 +470,10 @@ def seed_data():
             ]
             db.add_all(users)
         if db.scalar(select(func.count(ParkingSpot.id))) == 0:
-            spots = [ParkingSpot(code=f"P-{i:02d}", floor="A" if i <= 15 else "B") for i in range(1, 31)]
+            spots = [ParkingSpot(number=i) for i in range(1, 31)]
             db.add_all(spots)
+        if not db.get(AppSetting, "bookings_enabled"):
+            db.add(AppSetting(key="bookings_enabled", value="true"))
         db.commit()
     finally:
         db.close()
@@ -425,7 +510,7 @@ def list_spots(
     q = select(ParkingSpot)
     if not include_inactive:
         q = q.where(ParkingSpot.active == True)  # noqa: E712
-    return [spot_to_out(s) for s in db.scalars(q.order_by(ParkingSpot.code)).all()]
+    return [spot_to_out(s) for s in db.scalars(q.order_by(ParkingSpot.number)).all()]
 
 
 @app.get("/availability", response_model=dict)
@@ -486,6 +571,8 @@ def create_booking(
     db: Annotated[Session, Depends(get_db)],
     user: Annotated[User, Depends(current_user)],
 ):
+    if not are_bookings_enabled(db):
+        raise HTTPException(403, "Бронирования отключены")
     ensure_booking_allowed(db, user, payload.spot_id, payload.start_date, payload.end_date)
     booking = Booking(
         user_id=user.id,
@@ -497,6 +584,25 @@ def create_booking(
     db.commit()
     db.refresh(booking)
     return booking_to_out(booking)
+
+
+@app.get("/booking-settings", response_model=BookingSettingsOut)
+def get_booking_settings(
+    db: Annotated[Session, Depends(get_db)],
+    user: Annotated[User, Depends(require_role(Role.admin))],
+):
+    return BookingSettingsOut(bookings_enabled=are_bookings_enabled(db))
+
+
+@app.patch("/booking-settings", response_model=BookingSettingsOut)
+def update_booking_settings(
+    payload: BookingSettingsUpdate,
+    db: Annotated[Session, Depends(get_db)],
+    user: Annotated[User, Depends(require_role(Role.admin))],
+):
+    set_setting(db, "bookings_enabled", "true" if payload.bookings_enabled else "false")
+    db.commit()
+    return BookingSettingsOut(bookings_enabled=payload.bookings_enabled)
 
 
 @app.patch("/bookings/{booking_id}", response_model=BookingOut)
@@ -527,11 +633,13 @@ def update_booking(
 def delete_booking(
     booking_id: int,
     db: Annotated[Session, Depends(get_db)],
-    user: Annotated[User, Depends(require_role(Role.admin))],
+    user: Annotated[User, Depends(current_user)],
 ):
     booking = db.get(Booking, booking_id)
     if not booking:
         raise HTTPException(404, "Booking not found")
+    if user.role != Role.admin.value and booking.user_id != user.id:
+        raise HTTPException(status_code=403, detail="Forbidden")
     db.delete(booking)
     db.commit()
     return {"ok": True}
@@ -576,6 +684,10 @@ def update_user(
     target = db.get(User, user_id)
     if not target:
         raise HTTPException(404, "User not found")
+    if payload.username is not None and payload.username != target.username:
+        if get_user_by_username(db, payload.username):
+            raise HTTPException(400, "Username already exists")
+        target.username = payload.username
     if payload.full_name is not None:
         target.full_name = payload.full_name
     if payload.role is not None:
@@ -611,9 +723,9 @@ def create_spot(
     db: Annotated[Session, Depends(get_db)],
     user: Annotated[User, Depends(require_role(Role.admin))],
 ):
-    if db.scalar(select(ParkingSpot).where(ParkingSpot.code == payload.code)):
-        raise HTTPException(400, "Spot code already exists")
-    spot = ParkingSpot(code=payload.code, floor=payload.floor, active=payload.active)
+    if db.scalar(select(ParkingSpot).where(ParkingSpot.number == payload.number)):
+        raise HTTPException(400, "Spot number already exists")
+    spot = ParkingSpot(number=payload.number, active=payload.active)
     db.add(spot)
     db.commit()
     db.refresh(spot)
@@ -630,10 +742,10 @@ def update_spot(
     spot = db.get(ParkingSpot, spot_id)
     if not spot:
         raise HTTPException(404, "Spot not found")
-    if payload.code is not None:
-        spot.code = payload.code
-    if payload.floor is not None:
-        spot.floor = payload.floor
+    if payload.number is not None:
+        if db.scalar(select(ParkingSpot).where(ParkingSpot.number == payload.number, ParkingSpot.id != spot_id)):
+            raise HTTPException(400, "Spot number already exists")
+        spot.number = payload.number
     if payload.active is not None:
         spot.active = payload.active
     db.commit()

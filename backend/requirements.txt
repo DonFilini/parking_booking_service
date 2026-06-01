@@ -3,3 +3,4 @@ uvicorn
 sqlalchemy
 python-jose
 argon2-cffi
+python-multipart
