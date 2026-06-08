@@ -29,6 +29,42 @@ npm run dev
 По умолчанию frontend ждёт backend на `http://localhost:8000`.
 Настройки Vite лежат в `frontend/.env.example`.
 
+## Запуск в Docker на локальной Linux-машине
+
+Нужны Docker и Docker Compose plugin.
+
+```bash
+git clone https://github.com/DonFilini/parking_booking_service.git
+cd parking_booking_service
+docker compose up --build -d
+```
+
+После запуска приложение доступно по адресу:
+
+```text
+http://localhost:8080
+```
+
+Frontend работает через nginx и проксирует API-запросы на backend по пути `/api`.
+SQLite-база хранится в Docker volume `parking_booking_service_parking_data`.
+
+Полезные команды:
+
+```bash
+docker compose logs -f
+docker compose ps
+docker compose restart
+docker compose down
+```
+
+Чтобы удалить контейнеры вместе с локальной базой:
+
+```bash
+docker compose down -v
+```
+
+Перед реальным использованием поменяйте `SECRET_KEY` в `docker-compose.yml`.
+
 ## Тестовые пользователи
 
 Пароль у всех: `password`
