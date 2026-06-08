@@ -3,7 +3,9 @@ from __future__ import annotations
 from datetime import date, datetime, timedelta, time
 from enum import Enum
 import os
+import secrets
 from typing import Annotated, Optional
+import warnings
 from zoneinfo import ZoneInfo
 
 from fastapi import FastAPI, Depends, HTTPException, status
@@ -12,14 +14,22 @@ from fastapi.security import OAuth2PasswordBearer, OAuth2PasswordRequestForm
 from jose import jwt, JWTError
 from argon2 import PasswordHasher
 from argon2.exceptions import VerifyMismatchError
-from pydantic import BaseModel, ConfigDict
+from pydantic import BaseModel, ConfigDict, Field, model_validator
 from sqlalchemy import (
     create_engine, String, Integer, Boolean, Date, DateTime, ForeignKey, select, func, text
 )
 from sqlalchemy.orm import declarative_base, relationship, sessionmaker, Session, Mapped, mapped_column
 
 DATABASE_URL = os.getenv("DATABASE_URL", "sqlite:///./parking.db")
-SECRET_KEY = os.getenv("SECRET_KEY", "change-me-in-production")
+SECRET_KEY = os.getenv("SECRET_KEY")
+if not SECRET_KEY:
+    SECRET_KEY = secrets.token_urlsafe(32)
+    warnings.warn(
+        "SECRET_KEY не задан; используется временный ключ текущего процесса. "
+        "Для постоянных сессий задайте SECRET_KEY в окружении.",
+        RuntimeWarning,
+        stacklevel=2,
+    )
 ALGORITHM = "HS256"
 ACCESS_TOKEN_EXPIRE_HOURS = int(os.getenv("ACCESS_TOKEN_EXPIRE_HOURS", "12"))
 TZ = ZoneInfo(os.getenv("APP_TIME_ZONE", "Europe/Amsterdam"))
@@ -100,18 +110,18 @@ class AppSetting(Base):
 
 
 class UserCreate(BaseModel):
-    username: str
-    password: str
-    full_name: str = ""
+    username: str = Field(..., min_length=3, max_length=64, pattern=r"^[A-Za-z0-9_.-]+$")
+    password: str = Field(..., min_length=8, max_length=128)
+    full_name: str = Field("", max_length=128)
     role: Role = Role.employee
 
 
 class UserUpdate(BaseModel):
-    username: Optional[str] = None
-    full_name: Optional[str] = None
+    username: Optional[str] = Field(None, min_length=3, max_length=64, pattern=r"^[A-Za-z0-9_.-]+$")
+    full_name: Optional[str] = Field(None, max_length=128)
     role: Optional[Role] = None
     active: Optional[bool] = None
-    password: Optional[str] = None
+    password: Optional[str] = Field(None, min_length=8, max_length=128)
 
 
 class UserOut(BaseModel):
@@ -125,12 +135,12 @@ class UserOut(BaseModel):
 
 
 class SpotCreate(BaseModel):
-    number: int
+    number: int = Field(..., ge=1, le=10000)
     active: bool = True
 
 
 class SpotUpdate(BaseModel):
-    number: Optional[int] = None
+    number: Optional[int] = Field(None, ge=1, le=10000)
     active: Optional[bool] = None
 
 
@@ -143,15 +153,27 @@ class SpotOut(BaseModel):
 
 
 class BookingCreate(BaseModel):
-    spot_id: int
+    spot_id: int = Field(..., ge=1)
     start_date: date
     end_date: date
 
+    @model_validator(mode="after")
+    def validate_date_range(self) -> "BookingCreate":
+        if self.end_date < self.start_date:
+            raise ValueError("Дата окончания должна быть не раньше даты начала")
+        return self
+
 
 class BookingUpdate(BaseModel):
-    spot_id: Optional[int] = None
+    spot_id: Optional[int] = Field(None, ge=1)
     start_date: Optional[date] = None
     end_date: Optional[date] = None
+
+    @model_validator(mode="after")
+    def validate_date_range(self) -> "BookingUpdate":
+        if self.start_date is not None and self.end_date is not None and self.end_date < self.start_date:
+            raise ValueError("Дата окончания должна быть не раньше даты начала")
+        return self
 
 
 class BookingSettingsOut(BaseModel):
@@ -318,6 +340,11 @@ def set_setting(db: Session, key: str, value: str) -> None:
         db.add(AppSetting(key=key, value=value))
 
 
+def acquire_booking_write_lock(db: Session) -> None:
+    if DATABASE_URL.startswith("sqlite"):
+        db.execute(text("BEGIN IMMEDIATE"))
+
+
 def are_bookings_enabled(db: Session) -> bool:
     return get_setting(db, "bookings_enabled", "true") == "true"
 
@@ -326,7 +353,7 @@ def current_user(
     token: Annotated[str, Depends(oauth2_scheme)],
     db: Annotated[Session, Depends(get_db)],
 ) -> User:
-    exc = HTTPException(status_code=status.HTTP_401_UNAUTHORIZED, detail="Invalid token")
+    exc = HTTPException(status_code=status.HTTP_401_UNAUTHORIZED, detail="Сессия истекла или токен недействителен")
     try:
         payload = jwt.decode(token, SECRET_KEY, algorithms=[ALGORITHM])
         user_id = int(payload.get("sub"))
@@ -341,72 +368,86 @@ def current_user(
 def require_role(*roles: Role):
     def _checker(user: Annotated[User, Depends(current_user)]) -> User:
         if user.role not in {r.value for r in roles}:
-            raise HTTPException(status_code=403, detail="Forbidden")
+            raise HTTPException(status_code=403, detail="Недостаточно прав")
         return user
     return _checker
 
 
-def ensure_booking_allowed(db: Session, user: User, spot_id: int, start_date: date, end_date: date, booking_id: int | None = None) -> None:
-    today = get_today()
-    role = Role(user.role)
-
+def ensure_booking_integrity(
+    db: Session,
+    user_id: int,
+    spot_id: int,
+    start_date: date,
+    end_date: date,
+    booking_id: int | None = None,
+) -> list[Booking]:
     if end_date < start_date:
-        raise HTTPException(400, "end_date must be >= start_date")
-
-    # Admin may book any date range, including weekends.
-    if role != Role.admin:
-        if not is_business_day(start_date) or not is_business_day(end_date):
-            raise HTTPException(400, "Bookings must start and end on business days")
-        if contains_weekend(start_date, end_date):
-            raise HTTPException(400, "Booking range must not include weekends")
+        raise HTTPException(400, "Дата окончания должна быть не раньше даты начала")
 
     spot = get_spot_by_id(db, spot_id)
     if not spot or not spot.active:
-        raise HTTPException(400, "Selected spot is unavailable")
+        raise HTTPException(400, "Выбранное место недоступно")
 
-    # prevent spot conflicts
     stmt = select(Booking).where(Booking.spot_id == spot_id)
     if booking_id is not None:
         stmt = stmt.where(Booking.id != booking_id)
     existing_spot_bookings = db.scalars(stmt).all()
     for b in existing_spot_bookings:
         if booking_overlaps(start_date, end_date, b.start_date, b.end_date):
-            raise HTTPException(400, "Spot is already booked for this period")
+            raise HTTPException(400, "Место уже забронировано на этот период")
 
-    # prevent user conflicts for everyone
-    stmt = select(Booking).where(Booking.user_id == user.id)
+    stmt = select(Booking).where(Booking.user_id == user_id)
     if booking_id is not None:
         stmt = stmt.where(Booking.id != booking_id)
     existing_user_bookings = db.scalars(stmt).all()
     for b in existing_user_bookings:
         if booking_overlaps(start_date, end_date, b.start_date, b.end_date):
-            raise HTTPException(400, "You already have an overlapping booking")
+            raise HTTPException(400, "У пользователя уже есть пересекающееся бронирование")
+
+    return existing_user_bookings
+
+
+def ensure_booking_allowed(db: Session, user: User, spot_id: int, start_date: date, end_date: date, booking_id: int | None = None) -> None:
+    today = get_today()
+    role = Role(user.role)
+
+    # Admin may book any date range, including weekends.
+    if role != Role.admin:
+        if not is_business_day(start_date) or not is_business_day(end_date):
+            raise HTTPException(400, "Бронирование должно начинаться и заканчиваться в рабочие дни")
+        if contains_weekend(start_date, end_date):
+            raise HTTPException(400, "Период бронирования не должен включать выходные")
+
+    existing_user_bookings = ensure_booking_integrity(db, user.id, spot_id, start_date, end_date, booking_id)
 
     if role == Role.employee:
+        active_bookings = [b for b in existing_user_bookings if b.end_date >= today]
+        if active_bookings:
+            raise HTTPException(400, "У сотрудника может быть только одно активное бронирование")
         if get_now().time() < time(18, 0):
-            raise HTTPException(403, "Employee booking opens at 18:00")
+            raise HTTPException(403, "Бронирование для сотрудника открывается в 18:00")
         expected = next_business_day(today)
         if start_date != expected or end_date != expected:
-            raise HTTPException(400, f"Employee can book only for {expected.isoformat()}")
+            raise HTTPException(400, f"Сотрудник может бронировать только на {expected.isoformat()}")
     elif role == Role.manager:
         bd = business_days_count(start_date, end_date)
         if bd < 1 or bd > 5:
-            raise HTTPException(400, "Manager booking must be between 1 and 5 business days")
+            raise HTTPException(400, "Бронирование менеджера должно длиться от 1 до 5 рабочих дней")
         current_w_start, current_w_end = week_range(today)
         next_w_start = current_w_end + timedelta(days=1)
         next_w_end = next_w_start + timedelta(days=6)
         start_in_current = current_w_start <= start_date <= current_w_end
         start_in_next = next_w_start <= start_date <= next_w_end
         if not (start_in_current or start_in_next):
-            raise HTTPException(400, "Manager can book only for current or next week")
+            raise HTTPException(400, "Менеджер может бронировать только текущую или следующую неделю")
         # one booking per week
         week_bookings = db.scalars(select(Booking).where(Booking.user_id == user.id)).all()
         current_has = any(current_w_start <= b.start_date <= current_w_end for b in week_bookings if booking_id is None or b.id != booking_id)
         next_has = any(next_w_start <= b.start_date <= next_w_end for b in week_bookings if booking_id is None or b.id != booking_id)
         if start_in_current and current_has:
-            raise HTTPException(400, "Manager already has a booking for the current week")
+            raise HTTPException(400, "У менеджера уже есть бронирование на текущую неделю")
         if start_in_next and next_has:
-            raise HTTPException(400, "Manager already has a booking for the next week")
+            raise HTTPException(400, "У менеджера уже есть бронирование на следующую неделю")
 
 
 @app.on_event("startup")
@@ -491,7 +532,7 @@ def login(
 ):
     user = get_user_by_username(db, form.username)
     if not user or not user.active or not verify_password(form.password, user.password_hash):
-        raise HTTPException(status_code=400, detail="Incorrect username or password")
+        raise HTTPException(status_code=400, detail="Неверный логин или пароль")
     token = create_token(user)
     return TokenOut(access_token=token, user=user_to_out(user))
 
@@ -521,7 +562,7 @@ def availability(
     user: Annotated[User, Depends(current_user)],
 ):
     if end < start:
-        raise HTTPException(400, "end must be >= start")
+        raise HTTPException(400, "Дата окончания должна быть не раньше даты начала")
     spots = db.scalars(select(ParkingSpot).where(ParkingSpot.active == True)).all()  # noqa: E712
     bookings = db.scalars(select(Booking).join(Booking.spot).where(ParkingSpot.active == True)).all()  # noqa: E712
     available = []
@@ -571,6 +612,7 @@ def create_booking(
     db: Annotated[Session, Depends(get_db)],
     user: Annotated[User, Depends(current_user)],
 ):
+    acquire_booking_write_lock(db)
     if not are_bookings_enabled(db):
         raise HTTPException(403, "Бронирования отключены")
     ensure_booking_allowed(db, user, payload.spot_id, payload.start_date, payload.end_date)
@@ -612,15 +654,15 @@ def update_booking(
     db: Annotated[Session, Depends(get_db)],
     user: Annotated[User, Depends(require_role(Role.admin))],
 ):
+    acquire_booking_write_lock(db)
     booking = db.get(Booking, booking_id)
     if not booking:
-        raise HTTPException(404, "Booking not found")
+        raise HTTPException(404, "Бронирование не найдено")
     spot_id = payload.spot_id if payload.spot_id is not None else booking.spot_id
     start_date = payload.start_date if payload.start_date is not None else booking.start_date
     end_date = payload.end_date if payload.end_date is not None else booking.end_date
-    # Admin may edit any booking; we enforce only non-overlap integrity.
-    temp_admin = user
-    ensure_booking_allowed(db, temp_admin, spot_id, start_date, end_date, booking_id=booking.id)
+    # Admin may edit any booking; enforce integrity for the booking owner.
+    ensure_booking_integrity(db, booking.user_id, spot_id, start_date, end_date, booking_id=booking.id)
     booking.spot_id = spot_id
     booking.start_date = start_date
     booking.end_date = end_date
@@ -637,9 +679,9 @@ def delete_booking(
 ):
     booking = db.get(Booking, booking_id)
     if not booking:
-        raise HTTPException(404, "Booking not found")
+        raise HTTPException(404, "Бронирование не найдено")
     if user.role != Role.admin.value and booking.user_id != user.id:
-        raise HTTPException(status_code=403, detail="Forbidden")
+        raise HTTPException(status_code=403, detail="Недостаточно прав")
     db.delete(booking)
     db.commit()
     return {"ok": True}
@@ -661,7 +703,7 @@ def create_user(
     user: Annotated[User, Depends(require_role(Role.admin))],
 ):
     if get_user_by_username(db, payload.username):
-        raise HTTPException(400, "Username already exists")
+        raise HTTPException(400, "Пользователь с таким логином уже существует")
     new_user = User(
         username=payload.username,
         password_hash=hash_password(payload.password),
@@ -683,10 +725,10 @@ def update_user(
 ):
     target = db.get(User, user_id)
     if not target:
-        raise HTTPException(404, "User not found")
+        raise HTTPException(404, "Пользователь не найден")
     if payload.username is not None and payload.username != target.username:
         if get_user_by_username(db, payload.username):
-            raise HTTPException(400, "Username already exists")
+            raise HTTPException(400, "Пользователь с таким логином уже существует")
         target.username = payload.username
     if payload.full_name is not None:
         target.full_name = payload.full_name
@@ -709,9 +751,9 @@ def delete_user(
 ):
     target = db.get(User, user_id)
     if not target:
-        raise HTTPException(404, "User not found")
+        raise HTTPException(404, "Пользователь не найден")
     if db.scalar(select(func.count(Booking.id)).where(Booking.user_id == user_id)):
-        raise HTTPException(400, "Cannot delete user with bookings; disable the account instead")
+        raise HTTPException(400, "Нельзя удалить пользователя с бронированиями; отключите аккаунт")
     db.delete(target)
     db.commit()
     return {"ok": True}
@@ -724,7 +766,7 @@ def create_spot(
     user: Annotated[User, Depends(require_role(Role.admin))],
 ):
     if db.scalar(select(ParkingSpot).where(ParkingSpot.number == payload.number)):
-        raise HTTPException(400, "Spot number already exists")
+        raise HTTPException(400, "Место с таким номером уже существует")
     spot = ParkingSpot(number=payload.number, active=payload.active)
     db.add(spot)
     db.commit()
@@ -741,10 +783,10 @@ def update_spot(
 ):
     spot = db.get(ParkingSpot, spot_id)
     if not spot:
-        raise HTTPException(404, "Spot not found")
+        raise HTTPException(404, "Место не найдено")
     if payload.number is not None:
         if db.scalar(select(ParkingSpot).where(ParkingSpot.number == payload.number, ParkingSpot.id != spot_id)):
-            raise HTTPException(400, "Spot number already exists")
+            raise HTTPException(400, "Место с таким номером уже существует")
         spot.number = payload.number
     if payload.active is not None:
         spot.active = payload.active
@@ -761,9 +803,9 @@ def delete_spot(
 ):
     spot = db.get(ParkingSpot, spot_id)
     if not spot:
-        raise HTTPException(404, "Spot not found")
+        raise HTTPException(404, "Место не найдено")
     if db.scalar(select(func.count(Booking.id)).where(Booking.spot_id == spot_id)):
-        raise HTTPException(400, "Cannot delete spot with bookings; disable it instead")
+        raise HTTPException(400, "Нельзя удалить место с бронированиями; отключите его")
     db.delete(spot)
     db.commit()
     return {"ok": True}

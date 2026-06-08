@@ -1,8 +1,102 @@
 import React, { useEffect, useMemo, useState } from 'react'
 import { Link, Navigate, Route, Routes } from 'react-router-dom'
+import logoPlaceholder from './assets/logo-placeholder.svg'
 
 const API = import.meta.env.VITE_API_URL || 'http://localhost:8000'
 const APP_TIME_ZONE = import.meta.env.VITE_TIME_ZONE || 'Europe/Amsterdam'
+
+const ROLE_LABELS = {
+  employee: 'Сотрудник',
+  manager: 'Менеджер',
+  admin: 'Администратор',
+}
+
+const FIELD_LABELS = {
+  username: 'Логин',
+  password: 'Пароль',
+  full_name: 'Имя',
+  role: 'Роль',
+  active: 'Активность',
+  spot_id: 'Место',
+  start_date: 'Дата начала',
+  end_date: 'Дата окончания',
+  number: 'Номер места',
+  bookings_enabled: 'Бронирования',
+}
+
+const ERROR_TRANSLATIONS = {
+  'Invalid token': 'Сессия истекла или токен недействителен',
+  Forbidden: 'Недостаточно прав',
+  'Incorrect username or password': 'Неверный логин или пароль',
+  'end_date must be >= start_date': 'Дата окончания должна быть не раньше даты начала',
+  'end must be >= start': 'Дата окончания должна быть не раньше даты начала',
+  'Selected spot is unavailable': 'Выбранное место недоступно',
+  'Spot is already booked for this period': 'Место уже забронировано на этот период',
+  'You already have an overlapping booking': 'У вас уже есть пересекающееся бронирование',
+  'Bookings must start and end on business days': 'Бронирование должно начинаться и заканчиваться в рабочие дни',
+  'Booking range must not include weekends': 'Период бронирования не должен включать выходные',
+  'Employee can have only one active booking': 'У сотрудника может быть только одно активное бронирование',
+  'Employee booking opens at 18:00': 'Бронирование для сотрудника открывается в 18:00',
+  'Manager booking must be between 1 and 5 business days': 'Бронирование менеджера должно длиться от 1 до 5 рабочих дней',
+  'Manager can book only for current or next week': 'Менеджер может бронировать только текущую или следующую неделю',
+  'Manager already has a booking for the current week': 'У менеджера уже есть бронирование на текущую неделю',
+  'Manager already has a booking for the next week': 'У менеджера уже есть бронирование на следующую неделю',
+  'Booking not found': 'Бронирование не найдено',
+  'Username already exists': 'Пользователь с таким логином уже существует',
+  'User not found': 'Пользователь не найден',
+  'Cannot delete user with bookings; disable the account instead': 'Нельзя удалить пользователя с бронированиями; отключите аккаунт',
+  'Spot number already exists': 'Место с таким номером уже существует',
+  'Spot not found': 'Место не найдено',
+  'Cannot delete spot with bookings; disable it instead': 'Нельзя удалить место с бронированиями; отключите его',
+}
+
+function translateErrorMessage(message) {
+  if (!message) return ''
+  if (ERROR_TRANSLATIONS[message]) return ERROR_TRANSLATIONS[message]
+  if (message.includes('String should have at least')) return 'Слишком короткое значение'
+  if (message.includes('String should have at most')) return 'Слишком длинное значение'
+  if (message.includes('Input should be greater than or equal to')) return 'Значение меньше допустимого'
+  if (message.includes('Input should be less than or equal to')) return 'Значение больше допустимого'
+  if (message.includes('String should match pattern')) return 'Недопустимый формат'
+  if (message.includes('Input should be a valid integer')) return 'Введите целое число'
+  if (message.includes('Input should be a valid date')) return 'Введите дату в формате YYYY-MM-DD'
+  if (message.includes('Value error,')) return message.replace('Value error,', '').trim()
+  const employeeDate = message.match(/^Employee can book only for (.+)$/)
+  if (employeeDate) return `Сотрудник может бронировать только на ${employeeDate[1]}`
+  return message
+}
+
+function getErrorMessage(data, fallback) {
+  if (!data?.detail) return fallback
+  if (typeof data.detail === 'string') return translateErrorMessage(data.detail)
+  if (Array.isArray(data.detail)) {
+    return data.detail
+      .map((item) => {
+        const rawField = item.loc?.filter((part) => part !== 'body').join('.') || 'field'
+        const field = FIELD_LABELS[rawField] || rawField
+        return `${field}: ${translateErrorMessage(item.msg)}`
+      })
+      .join('; ')
+  }
+  return fallback
+}
+
+function escapeHtml(value) {
+  return String(value ?? '')
+    .replace(/&/g, '&amp;')
+    .replace(/</g, '&lt;')
+    .replace(/>/g, '&gt;')
+    .replace(/"/g, '&quot;')
+    .replace(/'/g, '&#39;')
+}
+
+async function readJson(res) {
+  try {
+    return await res.json()
+  } catch {
+    return null
+  }
+}
 
 function toISO(d) {
   const year = d.getFullYear()
@@ -240,6 +334,37 @@ function ConfirmDialog({ title, children, confirmText, danger, onConfirm, onCanc
   )
 }
 
+function UserSummary({ user }) {
+  return (
+    <div className="user-summary">
+      <div className="user-summary-main">{user.full_name || user.username}</div>
+      <div className="user-summary-meta">
+        {user.username} · {ROLE_LABELS[user.role] || user.role} · {user.active ? 'активен' : 'отключен'}
+      </div>
+    </div>
+  )
+}
+
+function AppHeader({ user, title, onLogout, adminView }) {
+  return (
+    <div className="topbar">
+      <div className="topbar-left">
+        <img className="brand-logo" src={logoPlaceholder} alt="Parking Book" />
+        <strong>{title}</strong>
+        {user.role === 'admin' && (
+          <Link className="nav-link" to={adminView ? '/' : '/menu'}>
+            {adminView ? 'Бронирование' : 'Администрирование'}
+          </Link>
+        )}
+      </div>
+      <div className="topbar-right">
+        <UserSummary user={user} />
+        <button onClick={onLogout}>Выйти</button>
+      </div>
+    </div>
+  )
+}
+
 function LoginPage({ onLogin }) {
   const [username, setUsername] = useState('employee')
   const [password, setPassword] = useState('password')
@@ -258,7 +383,7 @@ function LoginPage({ onLogin }) {
     })
     const data = await res.json()
     if (!res.ok) {
-      setError(data.detail || 'Ошибка входа')
+      setError(getErrorMessage(data, 'Ошибка входа'))
       return
     }
     onLogin(data.access_token, data.user)
@@ -281,23 +406,12 @@ function LoginPage({ onLogin }) {
 }
 
 function UserMenuPage({ user, onLogout }) {
+  if (user.role !== 'admin') return <Navigate to="/" replace />
+
   return (
     <div className="page">
-      <div className="topbar">
-        <Link to="/">Бронирование</Link>
-        <strong>Меню пользователя</strong>
-        <button onClick={onLogout}>Выйти</button>
-      </div>
-      <div className="menu-profile">
-        <div className="card">
-          <h3>Профиль</h3>
-          <div><strong>{user.full_name || user.username}</strong></div>
-          <div className="muted">{user.username}</div>
-          <div>Роль: {user.role}</div>
-          <div>Аккаунт: {user.active ? 'активен' : 'отключен'}</div>
-        </div>
-      </div>
-      {user.role === 'admin' && <AdminPanel />}
+      <AppHeader user={user} title="Администрирование" onLogout={onLogout} adminView />
+      <AdminPanel />
     </div>
   )
 }
@@ -314,6 +428,25 @@ function AdminPanel() {
   const [newUser, setNewUser] = useState({ username: '', password: '', full_name: '', role: 'employee' })
   const [editUser, setEditUser] = useState(null)
   const [editBooking, setEditBooking] = useState(null)
+  const [adminMessage, setAdminMessage] = useState('')
+  const [adminError, setAdminError] = useState('')
+  const [adminConfirm, setAdminConfirm] = useState(null)
+  const [reportDate, setReportDate] = useState(toISO(nowInAppTimeZone()))
+
+  const validateUserForm = (payload, requirePassword) => {
+    if (!/^[A-Za-z0-9_.-]{3,64}$/.test(payload.username || '')) {
+      return 'Логин: 3-64 символа, латиница, цифры, точка, дефис или подчеркивание'
+    }
+    if (payload.full_name && payload.full_name.length > 128) {
+      return 'Имя: максимум 128 символов'
+    }
+    if (requirePassword || payload.password) {
+      if (!payload.password || payload.password.length < 8 || payload.password.length > 128) {
+        return 'Пароль: 8-128 символов'
+      }
+    }
+    return ''
+  }
 
   const load = async () => {
     const [u, s, b, cfg] = await Promise.all([
@@ -330,46 +463,130 @@ function AdminPanel() {
 
   useEffect(() => { load() }, [])
 
+  const clearAdminStatus = () => {
+    setAdminError('')
+    setAdminMessage('')
+  }
+
+  const requestAdminConfirmation = (config) => {
+    clearAdminStatus()
+    setAdminConfirm(config)
+  }
+
+  const runAdminRequest = async ({ request, successMessage, fallbackError, afterSuccess }) => {
+    clearAdminStatus()
+    const res = await request()
+    const data = await readJson(res)
+    if (!res.ok) {
+      setAdminError(getErrorMessage(data, fallbackError))
+      return null
+    }
+    if (successMessage) {
+      setAdminMessage(typeof successMessage === 'function' ? successMessage(data) : successMessage)
+    }
+    if (afterSuccess) afterSuccess(data)
+    await load()
+    return data
+  }
+
   const toggleBookings = async () => {
-    await fetch(`${API}/booking-settings`, {
-      method: 'PATCH',
-      headers: { 'Content-Type': 'application/json', ...headers },
-      body: JSON.stringify({ bookings_enabled: !settings.bookings_enabled }),
+    const nextEnabled = !settings.bookings_enabled
+    requestAdminConfirmation({
+      title: nextEnabled ? 'Включить бронирования?' : 'Отключить бронирования?',
+      confirmText: nextEnabled ? 'Включить' : 'Отключить',
+      danger: !nextEnabled,
+      lines: [
+        ['Действие', nextEnabled ? 'Включить бронирования для всех' : 'Отключить бронирования для всех'],
+      ],
+      onConfirm: () => runAdminRequest({
+        request: () => fetch(`${API}/booking-settings`, {
+          method: 'PATCH',
+          headers: { 'Content-Type': 'application/json', ...headers },
+          body: JSON.stringify({ bookings_enabled: nextEnabled }),
+        }),
+        successMessage: nextEnabled ? 'Бронирования включены' : 'Бронирования отключены',
+        fallbackError: 'Не удалось изменить настройки бронирования',
+      }),
     })
-    load()
   }
 
   const createSpot = async () => {
-    await fetch(`${API}/spots`, {
-      method: 'POST',
-      headers: { 'Content-Type': 'application/json', ...headers },
-      body: JSON.stringify({ ...newSpot, number: Number(newSpot.number) }),
+    const number = Number(newSpot.number)
+    if (!Number.isInteger(number) || number < 1 || number > 10000) {
+      setAdminError('Номер места должен быть целым числом от 1 до 10000')
+      setAdminMessage('')
+      return
+    }
+    requestAdminConfirmation({
+      title: 'Добавить парковочное место?',
+      confirmText: 'Добавить',
+      lines: [['Номер места', number]],
+      onConfirm: () => runAdminRequest({
+        request: () => fetch(`${API}/spots`, {
+          method: 'POST',
+          headers: { 'Content-Type': 'application/json', ...headers },
+          body: JSON.stringify({ ...newSpot, number }),
+        }),
+        successMessage: (data) => `Место ${data.number} добавлено`,
+        fallbackError: 'Не удалось добавить место',
+        afterSuccess: () => setNewSpot({ number: '' }),
+      }),
     })
-    setNewSpot({ number: '' })
-    load()
   }
 
   const saveSpot = async (spot, patch) => {
-    await fetch(`${API}/spots/${spot.id}`, {
-      method: 'PATCH',
-      headers: { 'Content-Type': 'application/json', ...headers },
-      body: JSON.stringify(patch),
+    const nextActive = patch.active
+    requestAdminConfirmation({
+      title: nextActive ? 'Включить парковочное место?' : 'Отключить парковочное место?',
+      confirmText: nextActive ? 'Включить' : 'Отключить',
+      danger: !nextActive,
+      lines: [
+        ['Место', spot.number],
+        ['Новое состояние', nextActive ? 'активно' : 'отключено'],
+      ],
+      onConfirm: () => runAdminRequest({
+        request: () => fetch(`${API}/spots/${spot.id}`, {
+          method: 'PATCH',
+          headers: { 'Content-Type': 'application/json', ...headers },
+          body: JSON.stringify(patch),
+        }),
+        successMessage: nextActive ? `Место ${spot.number} включено` : `Место ${spot.number} отключено`,
+        fallbackError: 'Не удалось изменить место',
+      }),
     })
-    load()
   }
 
   const createUser = async () => {
-    await fetch(`${API}/users`, {
-      method: 'POST',
-      headers: { 'Content-Type': 'application/json', ...headers },
-      body: JSON.stringify(newUser),
+    clearAdminStatus()
+    const validationError = validateUserForm(newUser, true)
+    if (validationError) {
+      setAdminError(validationError)
+      return
+    }
+    requestAdminConfirmation({
+      title: 'Добавить пользователя?',
+      confirmText: 'Добавить',
+      lines: [
+        ['Логин', newUser.username],
+        ['Имя', newUser.full_name || 'Без имени'],
+        ['Роль', ROLE_LABELS[newUser.role] || newUser.role],
+      ],
+      onConfirm: () => runAdminRequest({
+        request: () => fetch(`${API}/users`, {
+          method: 'POST',
+          headers: { 'Content-Type': 'application/json', ...headers },
+          body: JSON.stringify(newUser),
+        }),
+        successMessage: (data) => `Пользователь ${data.username} добавлен`,
+        fallbackError: 'Не удалось добавить пользователя',
+        afterSuccess: () => setNewUser({ username: '', password: '', full_name: '', role: 'employee' }),
+      }),
     })
-    setNewUser({ username: '', password: '', full_name: '', role: 'employee' })
-    load()
   }
 
   const saveUser = async () => {
     if (!editUser) return
+    clearAdminStatus()
     const payload = {
       username: editUser.username,
       full_name: editUser.full_name,
@@ -377,46 +594,219 @@ function AdminPanel() {
       active: editUser.active,
     }
     if (editUser.password) payload.password = editUser.password
-    await fetch(`${API}/users/${editUser.id}`, {
-      method: 'PATCH',
-      headers: { 'Content-Type': 'application/json', ...headers },
-      body: JSON.stringify(payload),
+    const validationError = validateUserForm(payload, false)
+    if (validationError) {
+      setAdminError(validationError)
+      return
+    }
+    requestAdminConfirmation({
+      title: 'Сохранить изменения пользователя?',
+      confirmText: 'Сохранить',
+      lines: [
+        ['Логин', payload.username],
+        ['Имя', payload.full_name || 'Без имени'],
+        ['Роль', ROLE_LABELS[payload.role] || payload.role],
+        ['Аккаунт', payload.active ? 'активен' : 'отключен'],
+        ['Пароль', payload.password ? 'будет изменен' : 'без изменений'],
+      ],
+      onConfirm: () => runAdminRequest({
+        request: () => fetch(`${API}/users/${editUser.id}`, {
+          method: 'PATCH',
+          headers: { 'Content-Type': 'application/json', ...headers },
+          body: JSON.stringify(payload),
+        }),
+        successMessage: (data) => `Пользователь ${data.username} сохранен`,
+        fallbackError: 'Не удалось сохранить пользователя',
+        afterSuccess: () => setEditUser(null),
+      }),
     })
-    setEditUser(null)
-    load()
   }
 
   const deleteUser = async (id) => {
-    await fetch(`${API}/users/${id}`, { method: 'DELETE', headers })
-    load()
+    const target = users.find((item) => item.id === id)
+    requestAdminConfirmation({
+      title: 'Удалить пользователя?',
+      confirmText: 'Удалить',
+      danger: true,
+      lines: [
+        ['Логин', target?.username || id],
+        ['Имя', target?.full_name || 'Без имени'],
+      ],
+      onConfirm: () => runAdminRequest({
+        request: () => fetch(`${API}/users/${id}`, { method: 'DELETE', headers }),
+        successMessage: 'Пользователь удален',
+        fallbackError: 'Не удалось удалить пользователя',
+      }),
+    })
   }
 
   const saveBooking = async () => {
     if (!editBooking) return
-    await fetch(`${API}/bookings/${editBooking.id}`, {
-      method: 'PATCH',
-      headers: { 'Content-Type': 'application/json', ...headers },
-      body: JSON.stringify({
-        spot_id: Number(editBooking.spot_id),
-        start_date: editBooking.start_date,
-        end_date: editBooking.end_date,
+    const payload = {
+      spot_id: Number(editBooking.spot_id),
+      start_date: editBooking.start_date,
+      end_date: editBooking.end_date,
+    }
+    if (!Number.isInteger(payload.spot_id) || payload.spot_id < 1) {
+      setAdminError('ID места должен быть положительным числом')
+      setAdminMessage('')
+      return
+    }
+    if (!payload.start_date || !payload.end_date) {
+      setAdminError('Укажите даты начала и окончания')
+      setAdminMessage('')
+      return
+    }
+    requestAdminConfirmation({
+      title: 'Сохранить изменения бронирования?',
+      confirmText: 'Сохранить',
+      lines: [
+        ['Бронь', `#${editBooking.id}`],
+        ['ID места', payload.spot_id],
+        ['Период', `${payload.start_date} → ${payload.end_date}`],
+      ],
+      onConfirm: () => runAdminRequest({
+        request: () => fetch(`${API}/bookings/${editBooking.id}`, {
+          method: 'PATCH',
+          headers: { 'Content-Type': 'application/json', ...headers },
+          body: JSON.stringify(payload),
+        }),
+        successMessage: (data) => `Бронирование #${data.id} сохранено`,
+        fallbackError: 'Не удалось сохранить бронирование',
+        afterSuccess: () => setEditBooking(null),
       }),
     })
-    setEditBooking(null)
-    load()
   }
 
   const deleteBooking = async (id) => {
-    await fetch(`${API}/bookings/${id}`, { method: 'DELETE', headers })
-    load()
+    const target = bookings.find((item) => item.id === id)
+    requestAdminConfirmation({
+      title: 'Удалить бронирование?',
+      confirmText: 'Удалить',
+      danger: true,
+      lines: [
+        ['Бронь', `#${id}`],
+        ['Пользователь', target?.username || 'неизвестно'],
+        ['Место', target?.spot_number || 'неизвестно'],
+        ['Период', target ? `${target.start_date} → ${target.end_date}` : 'неизвестно'],
+      ],
+      onConfirm: () => runAdminRequest({
+        request: () => fetch(`${API}/bookings/${id}`, { method: 'DELETE', headers }),
+        successMessage: 'Бронирование удалено',
+        fallbackError: 'Не удалось удалить бронирование',
+      }),
+    })
   }
 
   const deleteSpot = async (id) => {
-    await fetch(`${API}/spots/${id}`, { method: 'DELETE', headers })
-    load()
+    const target = spots.find((item) => item.id === id)
+    requestAdminConfirmation({
+      title: 'Удалить парковочное место?',
+      confirmText: 'Удалить',
+      danger: true,
+      lines: [['Место', target?.number || id]],
+      onConfirm: () => runAdminRequest({
+        request: () => fetch(`${API}/spots/${id}`, { method: 'DELETE', headers }),
+        successMessage: 'Парковочное место удалено',
+        fallbackError: 'Не удалось удалить место',
+      }),
+    })
+  }
+
+  const downloadBookingsReport = (dateIso) => {
+    clearAdminStatus()
+    if (!dateIso) {
+      setAdminError('Выберите дату для отчета')
+      return
+    }
+
+    const dayBookings = bookings.filter((booking) => (
+      booking.start_date <= dateIso && dateIso <= booking.end_date
+    ))
+
+    const rows = dayBookings.map((booking) => [
+      booking.id,
+      booking.spot_number,
+      booking.username,
+      booking.full_name || '',
+      ROLE_LABELS[booking.role] || booking.role,
+      booking.start_date,
+      booking.end_date,
+      booking.created_at ? new Date(booking.created_at).toLocaleString('ru-RU') : '',
+    ])
+
+    const html = `<!doctype html>
+<html>
+<head>
+  <meta charset="UTF-8" />
+  <style>
+    table { border-collapse: collapse; font-family: Arial, sans-serif; }
+    th, td { border: 1px solid #5a6673; padding: 6px 8px; white-space: nowrap; }
+    th { background: #ff6a1a; color: #ffffff; font-weight: 700; }
+    .empty { color: #5a6673; }
+  </style>
+</head>
+<body>
+  <h2>Бронирования на ${escapeHtml(dateIso)}</h2>
+  <table>
+    <thead>
+      <tr>
+        <th>ID</th>
+        <th>Место</th>
+        <th>Логин</th>
+        <th>Имя</th>
+        <th>Роль</th>
+        <th>Начало</th>
+        <th>Окончание</th>
+        <th>Создано</th>
+      </tr>
+    </thead>
+    <tbody>
+      ${rows.length > 0
+        ? rows.map((row) => `<tr>${row.map((cell) => `<td>${escapeHtml(cell)}</td>`).join('')}</tr>`).join('')
+        : '<tr><td class="empty" colspan="8">На выбранную дату бронирований нет</td></tr>'}
+    </tbody>
+  </table>
+</body>
+</html>`
+
+    const blob = new Blob([html], { type: 'application/vnd.ms-excel;charset=utf-8' })
+    const url = URL.createObjectURL(blob)
+    const link = document.createElement('a')
+    link.href = url
+    link.download = `parking-bookings-${dateIso}.xls`
+    document.body.appendChild(link)
+    link.click()
+    link.remove()
+    URL.revokeObjectURL(url)
+    setAdminMessage(`Отчет за ${dateIso} сформирован`)
   }
 
   return (
+    <>
+    {(adminError || adminMessage) && (
+      <div className={adminError ? 'status-message status-error' : 'status-message status-info'}>
+        {adminError || adminMessage}
+      </div>
+    )}
+    <section className="card reports-panel">
+      <div className="reports-title">
+        <h3>Отчетность</h3>
+        <div className="muted">Excel-файл с бронированиями на выбранный день</div>
+      </div>
+      <div className="reports-actions">
+        <button onClick={() => downloadBookingsReport(toISO(nowInAppTimeZone()))}>На сегодня</button>
+        <div className="report-date-control">
+          <input
+            value={reportDate}
+            onChange={(e) => setReportDate(e.target.value)}
+            type="date"
+            aria-label="Дата отчета"
+          />
+          <button onClick={() => downloadBookingsReport(reportDate)}>На дату</button>
+        </div>
+      </div>
+    </section>
     <div className="admin-grid">
       <section className="card admin-card">
         <div className="row space">
@@ -424,27 +814,27 @@ function AdminPanel() {
           <div className="muted">{users.length} шт.</div>
         </div>
         <div className="admin-form">
-          <input value={newUser.username} onChange={(e) => setNewUser({ ...newUser, username: e.target.value })} placeholder="Логин" />
+          <input value={newUser.username} onChange={(e) => setNewUser({ ...newUser, username: e.target.value })} placeholder="Логин" minLength={3} maxLength={64} pattern="[A-Za-z0-9_.-]+" required />
           <input value={newUser.full_name} onChange={(e) => setNewUser({ ...newUser, full_name: e.target.value })} placeholder="Имя" />
           <select value={newUser.role} onChange={(e) => setNewUser({ ...newUser, role: e.target.value })}>
-            <option value="employee">employee</option>
-            <option value="manager">manager</option>
-            <option value="admin">admin</option>
+            <option value="employee">Сотрудник</option>
+            <option value="manager">Менеджер</option>
+            <option value="admin">Администратор</option>
           </select>
-          <input value={newUser.password} onChange={(e) => setNewUser({ ...newUser, password: e.target.value })} placeholder="Пароль" />
+          <input value={newUser.password} onChange={(e) => setNewUser({ ...newUser, password: e.target.value })} type="password" placeholder="Пароль" minLength={8} maxLength={128} required />
           <button onClick={createUser}>Добавить</button>
         </div>
         {editUser && (
           <div className="admin-edit">
             <strong>Редактирование пользователя #{editUser.id}</strong>
-            <input value={editUser.username} onChange={(e) => setEditUser({ ...editUser, username: e.target.value })} placeholder="Логин" />
+            <input value={editUser.username} onChange={(e) => setEditUser({ ...editUser, username: e.target.value })} placeholder="Логин" minLength={3} maxLength={64} pattern="[A-Za-z0-9_.-]+" required />
             <input value={editUser.full_name} onChange={(e) => setEditUser({ ...editUser, full_name: e.target.value })} placeholder="Имя" />
             <select value={editUser.role} onChange={(e) => setEditUser({ ...editUser, role: e.target.value })}>
-              <option value="employee">employee</option>
-              <option value="manager">manager</option>
-              <option value="admin">admin</option>
+              <option value="employee">Сотрудник</option>
+              <option value="manager">Менеджер</option>
+              <option value="admin">Администратор</option>
             </select>
-            <input value={editUser.password || ''} onChange={(e) => setEditUser({ ...editUser, password: e.target.value })} placeholder="Новый пароль" />
+            <input value={editUser.password || ''} onChange={(e) => setEditUser({ ...editUser, password: e.target.value })} type="password" placeholder="Новый пароль" minLength={8} maxLength={128} />
             <label className="checkbox-row">
               <input type="checkbox" checked={editUser.active} onChange={(e) => setEditUser({ ...editUser, active: e.target.checked })} />
               Активен
@@ -463,7 +853,7 @@ function AdminPanel() {
                 <div className="muted">{u.full_name || 'Без имени'} · {u.active ? 'активен' : 'отключен'}</div>
               </div>
               <div className="row">
-                <button onClick={() => setEditUser({ ...u, password: '' })}>Редактировать</button>
+                <button onClick={() => { clearAdminStatus(); setEditUser({ ...u, password: '' }) }}>Редактировать</button>
                 <button className="danger" onClick={() => deleteUser(u.id)}>Удалить</button>
               </div>
             </div>
@@ -500,12 +890,12 @@ function AdminPanel() {
                 <div className="muted">{b.username}</div>
               </div>
               <div className="row">
-                <button onClick={() => setEditBooking({
+                <button onClick={() => { clearAdminStatus(); setEditBooking({
                   id: b.id,
                   spot_id: b.spot_id,
                   start_date: b.start_date,
                   end_date: b.end_date,
-                })}>Редактировать</button>
+                }) }}>Редактировать</button>
                 <button className="danger" onClick={() => deleteBooking(b.id)}>Удалить</button>
               </div>
             </div>
@@ -538,6 +928,27 @@ function AdminPanel() {
         </div>
       </section>
     </div>
+    {adminConfirm && (
+      <ConfirmDialog
+        title={adminConfirm.title}
+        confirmText={adminConfirm.confirmText}
+        danger={adminConfirm.danger}
+        onConfirm={async () => {
+          const action = adminConfirm.onConfirm
+          setAdminConfirm(null)
+          await action()
+        }}
+        onCancel={() => setAdminConfirm(null)}
+      >
+        {adminConfirm.lines?.map(([label, value]) => (
+          <div className="modal-line" key={label}>
+            <span>{label}</span>
+            <strong>{value}</strong>
+          </div>
+        ))}
+      </ConfirmDialog>
+    )}
+    </>
   )
 }
 function BookingPage({ token, user, onLogout }) {
@@ -629,7 +1040,7 @@ function BookingPage({ token, user, onLogout }) {
     })
     const data = await res.json()
     if (!res.ok) {
-      setMessage(data.detail || 'Не удалось создать бронирование')
+      setMessage(getErrorMessage(data, 'Не удалось создать бронирование'))
       setBookingToConfirm(null)
       return
     }
@@ -646,7 +1057,7 @@ function BookingPage({ token, user, onLogout }) {
     const res = await fetch(`${API}/bookings/${bookingToDelete.id}`, { method: 'DELETE', headers })
     if (!res.ok) {
       const data = await res.json()
-      setMessage(data.detail || 'Не удалось удалить бронирование')
+      setMessage(getErrorMessage(data, 'Не удалось удалить бронирование'))
       setBookingToDelete(null)
       return
     }
@@ -661,11 +1072,7 @@ function BookingPage({ token, user, onLogout }) {
 
   return (
     <div className="page">
-      <div className="topbar">
-        <Link to="/menu">Меню</Link>
-        <strong>Бронирование парковки</strong>
-        <button onClick={onLogout}>Выйти</button>
-      </div>
+      <AppHeader user={user} title="Бронирование парковки" onLogout={onLogout} />
 
       <div className="booking-layout">
         <div className="booking-calendar">
