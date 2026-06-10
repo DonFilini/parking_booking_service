@@ -3,12 +3,20 @@ services:
     build:
       context: ./backend
     environment:
-      DATABASE_URL: sqlite:////data/parking.db
-      SECRET_KEY: change-this-local-secret
-      APP_TIME_ZONE: Europe/Moscow
-      CORS_ORIGINS: http://localhost:8080,http://127.0.0.1:8080
+      DATABASE_URL: "${DATABASE_URL:-sqlite:////data/parking.db}"
+      SECRET_KEY: "${SECRET_KEY:?Set SECRET_KEY in .env. Generate it with openssl rand -hex 32}"
+      APP_TIME_ZONE: "${APP_TIME_ZONE:-Europe/Moscow}"
+      ACCESS_TOKEN_EXPIRE_HOURS: "${ACCESS_TOKEN_EXPIRE_HOURS:-12}"
+      DEFAULT_SEED_PASSWORD: "${DEFAULT_SEED_PASSWORD:?Set DEFAULT_SEED_PASSWORD in .env for initial seeded users}"
+      CORS_ORIGINS: "${CORS_ORIGINS:-http://localhost:8080,http://127.0.0.1:8080}"
     volumes:
       - parking_data:/data
+    healthcheck:
+      test: ["CMD", "python", "-c", "import urllib.request; urllib.request.urlopen('http://127.0.0.1:8000/health', timeout=3)"]
+      interval: 30s
+      timeout: 5s
+      retries: 3
+      start_period: 10s
     restart: unless-stopped
 
   frontend:
@@ -17,9 +25,16 @@ services:
       args:
         VITE_API_URL: /api
     ports:
-      - "8080:80"
+      - "${FRONTEND_BIND_IP:-0.0.0.0}:${FRONTEND_PORT:-8080}:80"
     depends_on:
-      - backend
+      backend:
+        condition: service_healthy
+    healthcheck:
+      test: ["CMD-SHELL", "wget -qO- http://127.0.0.1/health >/dev/null 2>&1 || exit 1"]
+      interval: 30s
+      timeout: 5s
+      retries: 3
+      start_period: 10s
     restart: unless-stopped
 
 volumes:

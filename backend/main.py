@@ -32,6 +32,7 @@ if not SECRET_KEY:
     )
 ALGORITHM = "HS256"
 ACCESS_TOKEN_EXPIRE_HOURS = int(os.getenv("ACCESS_TOKEN_EXPIRE_HOURS", "12"))
+DEFAULT_SEED_PASSWORD = os.getenv("DEFAULT_SEED_PASSWORD", "password")
 TZ = ZoneInfo(os.getenv("APP_TIME_ZONE", "Europe/Amsterdam"))
 CORS_ORIGINS = [
     origin.strip()
@@ -505,9 +506,9 @@ def seed_data():
     try:
         if db.scalar(select(func.count(User.id))) == 0:
             users = [
-                User(username="admin", password_hash=hash_password("password"), full_name="System Admin", role=Role.admin.value),
-                User(username="manager", password_hash=hash_password("password"), full_name="Office Manager", role=Role.manager.value),
-                User(username="employee", password_hash=hash_password("password"), full_name="Regular Employee", role=Role.employee.value),
+                User(username="admin", password_hash=hash_password(DEFAULT_SEED_PASSWORD), full_name="System Admin", role=Role.admin.value),
+                User(username="manager", password_hash=hash_password(DEFAULT_SEED_PASSWORD), full_name="Office Manager", role=Role.manager.value),
+                User(username="employee", password_hash=hash_password(DEFAULT_SEED_PASSWORD), full_name="Regular Employee", role=Role.employee.value),
             ]
             db.add_all(users)
         if db.scalar(select(func.count(ParkingSpot.id))) == 0:

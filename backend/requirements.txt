@@ -1,7 +1,7 @@
-fastapi
-uvicorn
-sqlalchemy
-python-jose
-argon2-cffi
-python-multipart
-tzdata
+fastapi==0.136.3
+uvicorn==0.49.0
+sqlalchemy==2.0.50
+python-jose==3.5.0
+argon2-cffi==25.1.0
+python-multipart==0.0.32
+tzdata==2026.2
