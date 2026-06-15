@@ -112,6 +112,25 @@ class BookingRuleTests(unittest.TestCase):
         self.assertEqual(booking.spot_id, spot.id)
         self.assertEqual(booking.start_date, date(2026, 6, 13))
 
+    def test_admin_can_create_overlapping_booking_for_same_spot(self):
+        first_user = self.add_user("employee3", self.app.Role.employee)
+        admin = self.add_user("admin_overlap", self.app.Role.admin)
+        spot = self.add_spot(11)
+        self.add_booking(first_user, spot, date(2026, 6, 15), date(2026, 6, 16))
+
+        booking = self.app.create_booking(
+            self.app.BookingCreate(
+                spot_id=spot.id,
+                start_date=date(2026, 6, 16),
+                end_date=date(2026, 6, 17),
+            ),
+            self.db,
+            admin,
+        )
+
+        self.assertEqual(booking.spot_id, spot.id)
+        self.assertEqual(booking.user_id, admin.id)
+
     def test_admin_can_create_valid_user(self):
         admin = self.add_user("admin2", self.app.Role.admin)
 

@@ -381,6 +381,7 @@ def ensure_booking_integrity(
     start_date: date,
     end_date: date,
     booking_id: int | None = None,
+    allow_spot_overlap: bool = False,
 ) -> list[Booking]:
     if end_date < start_date:
         raise HTTPException(400, "Дата окончания должна быть не раньше даты начала")
@@ -389,13 +390,14 @@ def ensure_booking_integrity(
     if not spot or not spot.active:
         raise HTTPException(400, "Выбранное место недоступно")
 
-    stmt = select(Booking).where(Booking.spot_id == spot_id)
-    if booking_id is not None:
-        stmt = stmt.where(Booking.id != booking_id)
-    existing_spot_bookings = db.scalars(stmt).all()
-    for b in existing_spot_bookings:
-        if booking_overlaps(start_date, end_date, b.start_date, b.end_date):
-            raise HTTPException(400, "Место уже забронировано на этот период")
+    if not allow_spot_overlap:
+        stmt = select(Booking).where(Booking.spot_id == spot_id)
+        if booking_id is not None:
+            stmt = stmt.where(Booking.id != booking_id)
+        existing_spot_bookings = db.scalars(stmt).all()
+        for b in existing_spot_bookings:
+            if booking_overlaps(start_date, end_date, b.start_date, b.end_date):
+                raise HTTPException(400, "Место уже забронировано на этот период")
 
     stmt = select(Booking).where(Booking.user_id == user_id)
     if booking_id is not None:
@@ -419,7 +421,15 @@ def ensure_booking_allowed(db: Session, user: User, spot_id: int, start_date: da
         if contains_weekend(start_date, end_date):
             raise HTTPException(400, "Период бронирования не должен включать выходные")
 
-    existing_user_bookings = ensure_booking_integrity(db, user.id, spot_id, start_date, end_date, booking_id)
+    existing_user_bookings = ensure_booking_integrity(
+        db,
+        user.id,
+        spot_id,
+        start_date,
+        end_date,
+        booking_id,
+        allow_spot_overlap=role == Role.admin,
+    )
 
     if role == Role.employee:
         active_bookings = [b for b in existing_user_bookings if b.end_date >= today]
@@ -663,7 +673,15 @@ def update_booking(
     start_date = payload.start_date if payload.start_date is not None else booking.start_date
     end_date = payload.end_date if payload.end_date is not None else booking.end_date
     # Admin may edit any booking; enforce integrity for the booking owner.
-    ensure_booking_integrity(db, booking.user_id, spot_id, start_date, end_date, booking_id=booking.id)
+    ensure_booking_integrity(
+        db,
+        booking.user_id,
+        spot_id,
+        start_date,
+        end_date,
+        booking_id=booking.id,
+        allow_spot_overlap=True,
+    )
     booking.spot_id = spot_id
     booking.start_date = start_date
     booking.end_date = end_date
