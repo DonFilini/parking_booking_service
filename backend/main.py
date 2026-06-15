@@ -382,6 +382,7 @@ def ensure_booking_integrity(
     end_date: date,
     booking_id: int | None = None,
     allow_spot_overlap: bool = False,
+    allow_user_overlap: bool = False,
 ) -> list[Booking]:
     if end_date < start_date:
         raise HTTPException(400, "Дата окончания должна быть не раньше даты начала")
@@ -403,9 +404,10 @@ def ensure_booking_integrity(
     if booking_id is not None:
         stmt = stmt.where(Booking.id != booking_id)
     existing_user_bookings = db.scalars(stmt).all()
-    for b in existing_user_bookings:
-        if booking_overlaps(start_date, end_date, b.start_date, b.end_date):
-            raise HTTPException(400, "У пользователя уже есть пересекающееся бронирование")
+    if not allow_user_overlap:
+        for b in existing_user_bookings:
+            if booking_overlaps(start_date, end_date, b.start_date, b.end_date):
+                raise HTTPException(400, "У пользователя уже есть пересекающееся бронирование")
 
     return existing_user_bookings
 
@@ -428,7 +430,7 @@ def ensure_booking_allowed(db: Session, user: User, spot_id: int, start_date: da
         start_date,
         end_date,
         booking_id,
-        allow_spot_overlap=role == Role.admin,
+        allow_user_overlap=role == Role.admin,
     )
 
     if role == Role.employee:
@@ -680,7 +682,7 @@ def update_booking(
         start_date,
         end_date,
         booking_id=booking.id,
-        allow_spot_overlap=True,
+        allow_user_overlap=True,
     )
     booking.spot_id = spot_id
     booking.start_date = start_date
