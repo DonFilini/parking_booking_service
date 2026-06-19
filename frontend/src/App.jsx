@@ -392,6 +392,13 @@ function LoginPage({ onLogin }) {
   return (
     <div className="page center">
       <div className="card auth">
+        <div className="auth-brand">
+          <img className="auth-logo" src={logoPlaceholder} alt="Парковка" />
+          <div>
+            <h1>Парковка</h1>
+            <div className="muted">Бронирование парковочных мест</div>
+          </div>
+        </div>
         <h2>Вход</h2>
         <form onSubmit={submit} className="stack">
           <input value={username} onChange={(e) => setUsername(e.target.value)} placeholder="Логин" />

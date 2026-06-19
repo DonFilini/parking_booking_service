@@ -24,6 +24,7 @@
 
 body {
   margin: 0;
+  overflow-x: hidden;
   color: var(--text);
   background: var(--bg);
 }
@@ -50,6 +51,7 @@ select {
 button {
   cursor: pointer;
   font-weight: 600;
+  white-space: normal;
   transition: border-color 0.15s ease, background 0.15s ease, color 0.15s ease, box-shadow 0.15s ease;
 }
 
@@ -101,6 +103,28 @@ button.selected,
   width: min(420px, 92vw);
 }
 
+.auth-brand {
+  display: flex;
+  align-items: center;
+  gap: 14px;
+  margin-bottom: 22px;
+  padding-bottom: 18px;
+  border-bottom: 1px solid var(--border);
+}
+
+.auth-brand h1 {
+  margin: 0 0 3px;
+  font-size: 24px;
+  line-height: 1.2;
+}
+
+.auth-logo {
+  width: 144px;
+  height: 36px;
+  display: block;
+  flex: 0 0 auto;
+}
+
 .stack {
   display: grid;
   gap: 10px;
@@ -108,8 +132,10 @@ button.selected,
 
 .row {
   display: flex;
+  flex-wrap: wrap;
   gap: 10px;
   align-items: center;
+  min-width: 0;
 }
 
 .space {
@@ -311,10 +337,15 @@ button.selected,
   justify-content: space-between;
   align-items: center;
   gap: 12px;
+  min-width: 0;
   padding: 12px;
   border: 1px solid var(--border);
   border-radius: 8px;
   background: var(--surface-soft);
+}
+
+.list-item .row {
+  justify-content: flex-end;
 }
 
 .list-item > div:first-child {
@@ -412,7 +443,7 @@ button.selected,
 
 .admin-grid {
   display: grid;
-  grid-template-columns: minmax(420px, 0.95fr) minmax(520px, 1.2fr) minmax(360px, 0.85fr);
+  grid-template-columns: minmax(360px, 0.95fr) minmax(440px, 1.2fr) minmax(300px, 0.85fr);
   gap: 16px;
   align-items: start;
 }
@@ -469,6 +500,7 @@ button.selected,
 .admin-card {
   display: grid;
   gap: 12px;
+  min-width: 0;
 }
 
 .admin-form,
@@ -514,9 +546,95 @@ button.selected,
 }
 
 .compact-list {
-  max-height: 620px;
+  max-height: min(620px, calc(100vh - 360px));
   overflow: auto;
   padding-right: 2px;
+}
+
+@media (max-height: 820px) and (min-width: 981px) {
+  .page {
+    padding-top: 14px;
+    padding-bottom: 14px;
+  }
+
+  .topbar {
+    min-height: 60px;
+    padding-top: 10px;
+    padding-bottom: 10px;
+  }
+
+  .card {
+    padding: 12px;
+  }
+
+  .admin-grid {
+    gap: 12px;
+  }
+
+  .reports-panel {
+    min-height: 64px;
+  }
+
+  .admin-card {
+    gap: 10px;
+  }
+
+  .admin-form,
+  .admin-edit,
+  .list-item {
+    padding: 10px;
+  }
+
+  .compact-list {
+    max-height: min(340px, calc(100vh - 390px));
+  }
+}
+
+@media (max-width: 1320px) {
+  .page {
+    max-width: 1180px;
+    padding: 16px 18px;
+  }
+
+  .topbar {
+    margin-bottom: 12px;
+  }
+
+  .admin-grid {
+    grid-template-columns: minmax(0, 1fr) minmax(300px, 0.72fr);
+    gap: 12px;
+  }
+
+  .admin-grid .admin-card:nth-child(2) {
+    grid-column: 1 / -1;
+    grid-row: 1;
+  }
+
+  .reports-panel {
+    min-height: 0;
+    margin-bottom: 12px;
+    padding-top: 12px;
+    padding-bottom: 12px;
+  }
+
+  .compact-list {
+    max-height: min(360px, calc(100vh - 360px));
+  }
+}
+
+@media (max-width: 1120px) {
+  .admin-grid {
+    grid-template-columns: 1fr;
+  }
+
+  .admin-grid .admin-card:nth-child(2) {
+    grid-column: auto;
+    grid-row: auto;
+  }
+
+  .compact-list {
+    max-height: 420px;
+  }
 }
 
 @media (min-width: 1500px) and (min-height: 900px) {
@@ -593,6 +711,11 @@ button.selected,
 }
 
 @media (max-width: 560px) {
+  .auth-brand {
+    align-items: flex-start;
+    flex-direction: column;
+  }
+
   .row,
   .list-item {
     align-items: stretch;
