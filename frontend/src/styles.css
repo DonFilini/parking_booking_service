@@ -204,7 +204,9 @@ button.selected,
 
 .booking-layout {
   display: grid;
-  grid-template-columns: minmax(520px, 0.92fr) minmax(640px, 1.08fr);
+  width: 100%;
+  min-width: 0;
+  grid-template-columns: minmax(0, 0.92fr) minmax(0, 1.08fr);
   grid-template-areas:
     "calendar spots"
     "period spots"
@@ -213,10 +215,10 @@ button.selected,
   align-items: start;
 }
 
-.booking-calendar { grid-area: calendar; }
-.booking-spots { grid-area: spots; }
-.booking-period { grid-area: period; }
-.booking-list { grid-area: list; }
+.booking-calendar { grid-area: calendar; min-width: 0; }
+.booking-spots { grid-area: spots; min-width: 0; }
+.booking-period { grid-area: period; min-width: 0; }
+.booking-list { grid-area: list; min-width: 0; }
 
 .error,
 .status-error {
@@ -284,7 +286,8 @@ button.selected,
 
 .calendar {
   display: grid;
-  grid-template-columns: repeat(7, 1fr);
+  min-width: 0;
+  grid-template-columns: repeat(7, minmax(0, 1fr));
   gap: 8px;
   margin: 14px 0;
 }
@@ -309,11 +312,14 @@ button.selected,
 }
 
 .spots-card {
+  min-width: 0;
   min-height: 100%;
 }
 
 .spots {
   display: grid;
+  width: 100%;
+  min-width: 0;
   grid-template-columns: repeat(auto-fill, minmax(76px, 1fr));
   gap: 10px;
 }
