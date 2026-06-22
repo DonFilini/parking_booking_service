@@ -33,7 +33,7 @@ if not SECRET_KEY:
 ALGORITHM = "HS256"
 ACCESS_TOKEN_EXPIRE_HOURS = int(os.getenv("ACCESS_TOKEN_EXPIRE_HOURS", "12"))
 DEFAULT_SEED_PASSWORD = os.getenv("DEFAULT_SEED_PASSWORD", "password")
-TZ = ZoneInfo(os.getenv("APP_TIME_ZONE", "Europe/Amsterdam"))
+TZ = ZoneInfo(os.getenv("APP_TIME_ZONE", "Europe/Moscow"))
 CORS_ORIGINS = [
     origin.strip()
     for origin in os.getenv(
@@ -437,11 +437,14 @@ def ensure_booking_allowed(db: Session, user: User, spot_id: int, start_date: da
         active_bookings = [b for b in existing_user_bookings if b.end_date >= today]
         if active_bookings:
             raise HTTPException(400, "У сотрудника может быть только одно активное бронирование")
-        if get_now().time() < time(18, 0):
-            raise HTTPException(403, "Бронирование для сотрудника открывается в 18:00")
-        expected = next_business_day(today)
-        if start_date != expected or end_date != expected:
-            raise HTTPException(400, f"Сотрудник может бронировать только на {expected.isoformat()}")
+        allowed_dates = {today}
+        if get_now().time() >= time(18, 0):
+            allowed_dates.add(next_business_day(today))
+        if start_date != end_date or start_date not in allowed_dates:
+            raise HTTPException(
+                400,
+                "Сотрудник может бронировать на сегодня, а после 18:00 — также на следующий рабочий день",
+            )
     elif role == Role.manager:
         bd = business_days_count(start_date, end_date)
         if bd < 1 or bd > 5:
@@ -453,14 +456,6 @@ def ensure_booking_allowed(db: Session, user: User, spot_id: int, start_date: da
         start_in_next = next_w_start <= start_date <= next_w_end
         if not (start_in_current or start_in_next):
             raise HTTPException(400, "Менеджер может бронировать только текущую или следующую неделю")
-        # one booking per week
-        week_bookings = db.scalars(select(Booking).where(Booking.user_id == user.id)).all()
-        current_has = any(current_w_start <= b.start_date <= current_w_end for b in week_bookings if booking_id is None or b.id != booking_id)
-        next_has = any(next_w_start <= b.start_date <= next_w_end for b in week_bookings if booking_id is None or b.id != booking_id)
-        if start_in_current and current_has:
-            raise HTTPException(400, "У менеджера уже есть бронирование на текущую неделю")
-        if start_in_next and next_has:
-            raise HTTPException(400, "У менеджера уже есть бронирование на следующую неделю")
 
 
 @app.on_event("startup")

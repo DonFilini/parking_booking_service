@@ -3,7 +3,7 @@ import { Link, Navigate, Route, Routes } from 'react-router-dom'
 import logoPlaceholder from './assets/logo-placeholder.svg'
 
 const API = import.meta.env.VITE_API_URL || 'http://localhost:8000'
-const APP_TIME_ZONE = import.meta.env.VITE_TIME_ZONE || 'Europe/Amsterdam'
+const APP_TIME_ZONE = import.meta.env.VITE_TIME_ZONE || 'Europe/Moscow'
 
 const ROLE_LABELS = {
   employee: 'Сотрудник',
@@ -150,15 +150,15 @@ function nextBusinessDay(date) {
   return x
 }
 
+function sameMonth(a, b) {
+  return a.getFullYear() === b.getFullYear() && a.getMonth() === b.getMonth()
+}
+
 function mondayOf(date) {
   const x = new Date(date)
   const day = x.getDay() || 7
   x.setDate(x.getDate() - day + 1)
   return x
-}
-
-function sameMonth(a, b) {
-  return a.getFullYear() === b.getFullYear() && a.getMonth() === b.getMonth()
 }
 
 function startOfMonth(d) {
@@ -167,6 +167,10 @@ function startOfMonth(d) {
 
 function endOfMonth(d) {
   return new Date(d.getFullYear(), d.getMonth() + 1, 0)
+}
+
+function shiftMonth(date, offset) {
+  return new Date(date.getFullYear(), date.getMonth() + offset, 1)
 }
 
 function monthGrid(monthDate) {
@@ -201,10 +205,9 @@ function Calendar({ role, value, onChange }) {
     if (!isBusinessDay(d)) return false
 
     if (role === 'employee') {
-      const target = nextBusinessDay(d0)
-      const now = nowInAppTimeZone()
-      const after18 = now.getHours() >= 18
-      return after18 && toISO(d) === toISO(target)
+      if (toISO(d) === toISO(d0)) return true
+      const nextDay = nextBusinessDay(d0)
+      return nowInAppTimeZone().getHours() >= 18 && toISO(d) === toISO(nextDay)
     }
     if (role === 'manager') {
       const currentWeekStart = mondayOf(d0)
@@ -223,8 +226,8 @@ function Calendar({ role, value, onChange }) {
       <div className="row space">
         <h3>Календарь</h3>
         <div className="row">
-          <button onClick={() => setMonth(addDays(month, -35))}>←</button>
-          <button onClick={() => setMonth(addDays(month, 35))}>→</button>
+          <button onClick={() => setMonth(shiftMonth(month, -1))}>←</button>
+          <button onClick={() => setMonth(shiftMonth(month, 1))}>→</button>
         </div>
       </div>
       <div className="muted">{label}</div>
@@ -246,7 +249,11 @@ function Calendar({ role, value, onChange }) {
               key={iso}
               className={`calendar-cell ${sameMonth(day, month) ? '' : 'calendar-fade'} ${selected ? 'selected' : ''} ${inRange ? 'inrange' : ''}`}
               disabled={disabled}
-              onClick={() => onChange(day)}
+              onClick={() => {
+                onChange(day)
+                if (!sameMonth(day, month)) setMonth(startOfMonth(day))
+              }}
+              data-date={iso}
               title={disabled ? 'Недоступно по правилам роли' : 'Выбрать дату'}
             >
               {day.getDate()}
@@ -255,8 +262,8 @@ function Calendar({ role, value, onChange }) {
         })}
       </div>
       <div className="muted">
-        {role === 'employee' && 'Сотруднику доступен только следующий рабочий день после 18:00 текущего дня.'}
-        {role === 'manager' && 'Менеджеру доступны текущая и следующая неделя, максимум 5 рабочих дней.'}
+        {role === 'employee' && 'Сотруднику доступно бронирование на сегодня, а после 18:00 — также на следующий рабочий день.'}
+        {role === 'manager' && 'Менеджеру доступны несколько непересекающихся бронирований в текущей и следующей неделе, каждое — максимум на 5 рабочих дней.'}
         {role === 'admin' && 'Администратор может бронировать любой свободный слот на любой срок.'}
       </div>
     </div>
@@ -989,13 +996,8 @@ function BookingPage({ token, user, onLogout }) {
 
   useEffect(() => {
     if (user.role === 'employee') {
-      const now = nowInAppTimeZone()
-      if (now.getHours() >= 18) {
-        const d = nextBusinessDay(now)
-        setSelectedRange({ start: d, end: d })
-      } else {
-        setSelectedRange({ start: null, end: null })
-      }
+      const today = nowInAppTimeZone()
+      setSelectedRange(isBusinessDay(today) ? { start: today, end: today } : { start: null, end: null })
     }
   }, [user.role])
 

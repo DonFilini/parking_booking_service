@@ -66,16 +66,171 @@ class BookingRuleTests(unittest.TestCase):
 
         with (
             patch.object(self.app, "get_today", return_value=date(2026, 6, 8)),
-            patch.object(self.app, "get_now", return_value=datetime(2026, 6, 8, 19, 0)),
+            patch.object(self.app, "get_now", return_value=datetime(2026, 6, 8, 17, 0)),
             self.assertRaisesRegex(self.app.HTTPException, "только одно активное бронирование"),
         ):
             self.app.ensure_booking_allowed(
                 self.db,
                 employee,
                 second_spot.id,
-                date(2026, 6, 10),
+                date(2026, 6, 8),
+                date(2026, 6, 8),
+            )
+
+    def test_employee_can_book_today(self):
+        employee = self.add_user("employee_today", self.app.Role.employee)
+        spot = self.add_spot(3)
+
+        with (
+            patch.object(self.app, "get_today", return_value=date(2026, 6, 8)),
+            patch.object(self.app, "get_now", return_value=datetime(2026, 6, 8, 17, 0)),
+        ):
+            booking = self.app.create_booking(
+                self.app.BookingCreate(
+                    spot_id=spot.id,
+                    start_date=date(2026, 6, 8),
+                    end_date=date(2026, 6, 8),
+                ),
+                self.db,
+                employee,
+            )
+
+        self.assertEqual(booking.start_date, date(2026, 6, 8))
+        self.assertEqual(booking.end_date, date(2026, 6, 8))
+
+    def test_employee_cannot_book_next_day_before_18(self):
+        employee = self.add_user("employee_other_day", self.app.Role.employee)
+        spot = self.add_spot(4)
+
+        with (
+            patch.object(self.app, "get_today", return_value=date(2026, 6, 8)),
+            patch.object(self.app, "get_now", return_value=datetime(2026, 6, 8, 17, 59)),
+            self.assertRaisesRegex(self.app.HTTPException, "после 18:00"),
+        ):
+            self.app.ensure_booking_allowed(
+                self.db,
+                employee,
+                spot.id,
+                date(2026, 6, 9),
+                date(2026, 6, 9),
+            )
+
+    def test_employee_can_book_next_business_day_after_18(self):
+        employee = self.add_user("employee_tomorrow", self.app.Role.employee)
+        spot = self.add_spot(5)
+
+        with (
+            patch.object(self.app, "get_today", return_value=date(2026, 6, 12)),
+            patch.object(self.app, "get_now", return_value=datetime(2026, 6, 12, 18, 0)),
+        ):
+            booking = self.app.create_booking(
+                self.app.BookingCreate(
+                    spot_id=spot.id,
+                    start_date=date(2026, 6, 15),
+                    end_date=date(2026, 6, 15),
+                ),
+                self.db,
+                employee,
+            )
+
+        self.assertEqual(booking.start_date, date(2026, 6, 15))
+
+    def test_manager_uses_free_spot_pool_for_multiple_non_overlapping_bookings(self):
+        manager = self.add_user("manager_multiple", self.app.Role.manager)
+        other_user = self.add_user("other_employee", self.app.Role.employee)
+        occupied_spot = self.add_spot(6)
+        first_free_spot = self.add_spot(7)
+        second_free_spot = self.add_spot(8)
+        self.add_booking(other_user, occupied_spot, date(2026, 6, 8), date(2026, 6, 9))
+
+        with patch.object(self.app, "get_today", return_value=date(2026, 6, 8)):
+            first_pool = self.app.availability(
+                date(2026, 6, 8),
+                date(2026, 6, 9),
+                self.db,
+                manager,
+            )
+            first_pool_ids = {spot.id for spot in first_pool["available_spots"]}
+            self.assertNotIn(occupied_spot.id, first_pool_ids)
+            self.assertIn(first_free_spot.id, first_pool_ids)
+            self.assertIn(second_free_spot.id, first_pool_ids)
+
+            first = self.app.create_booking(
+                self.app.BookingCreate(
+                    spot_id=first_free_spot.id,
+                    start_date=date(2026, 6, 8),
+                    end_date=date(2026, 6, 9),
+                ),
+                self.db,
+                manager,
+            )
+
+            second_pool = self.app.availability(
+                date(2026, 6, 11),
+                date(2026, 6, 12),
+                self.db,
+                manager,
+            )
+            second_pool_ids = {spot.id for spot in second_pool["available_spots"]}
+            self.assertIn(second_free_spot.id, second_pool_ids)
+
+            second = self.app.create_booking(
+                self.app.BookingCreate(
+                    spot_id=second_free_spot.id,
+                    start_date=date(2026, 6, 11),
+                    end_date=date(2026, 6, 12),
+                ),
+                self.db,
+                manager,
+            )
+
+        self.assertEqual(first.spot_id, first_free_spot.id)
+        self.assertEqual(second.spot_id, second_free_spot.id)
+
+    def test_manager_cannot_create_overlapping_bookings(self):
+        manager = self.add_user("manager_overlap", self.app.Role.manager)
+        first_spot = self.add_spot(7)
+        second_spot = self.add_spot(8)
+        self.add_booking(manager, first_spot, date(2026, 6, 8), date(2026, 6, 9))
+
+        with (
+            patch.object(self.app, "get_today", return_value=date(2026, 6, 8)),
+            self.assertRaisesRegex(self.app.HTTPException, "пересекающееся бронирование"),
+        ):
+            self.app.ensure_booking_allowed(
+                self.db,
+                manager,
+                second_spot.id,
+                date(2026, 6, 9),
                 date(2026, 6, 10),
             )
+
+    def test_manager_can_book_full_workweek_across_month_boundary(self):
+        manager = self.add_user("manager_cross_month", self.app.Role.manager)
+        spot = self.add_spot(9)
+
+        with patch.object(self.app, "get_today", return_value=date(2026, 6, 25)):
+            pool = self.app.availability(
+                date(2026, 6, 29),
+                date(2026, 7, 3),
+                self.db,
+                manager,
+            )
+            pool_ids = {available_spot.id for available_spot in pool["available_spots"]}
+            self.assertIn(spot.id, pool_ids)
+
+            booking = self.app.create_booking(
+                self.app.BookingCreate(
+                    spot_id=spot.id,
+                    start_date=date(2026, 6, 29),
+                    end_date=date(2026, 7, 3),
+                ),
+                self.db,
+                manager,
+            )
+
+        self.assertEqual(booking.start_date, date(2026, 6, 29))
+        self.assertEqual(booking.end_date, date(2026, 7, 3))
 
     def test_admin_edit_integrity_uses_booking_owner_conflicts(self):
         employee = self.add_user("employee2", self.app.Role.employee)
