@@ -439,7 +439,7 @@ function AdminPanel() {
   const [bookings, setBookings] = useState([])
   const [settings, setSettings] = useState({ bookings_enabled: true })
   const [newSpot, setNewSpot] = useState({ number: '' })
-  const [newUser, setNewUser] = useState({ username: '', password: '', full_name: '', role: 'employee' })
+  const [newUser, setNewUser] = useState({ username: '', full_name: '', role: 'employee' })
   const [editUser, setEditUser] = useState(null)
   const [editBooking, setEditBooking] = useState(null)
   const [adminMessage, setAdminMessage] = useState('')
@@ -447,17 +447,12 @@ function AdminPanel() {
   const [adminConfirm, setAdminConfirm] = useState(null)
   const [reportDate, setReportDate] = useState(toISO(nowInAppTimeZone()))
 
-  const validateUserForm = (payload, requirePassword) => {
+  const validateUserForm = (payload) => {
     if (!/^[A-Za-z0-9_.-]{3,64}$/.test(payload.username || '')) {
       return 'Логин: 3-64 символа, латиница, цифры, точка, дефис или подчеркивание'
     }
     if (payload.full_name && payload.full_name.length > 128) {
       return 'Имя: максимум 128 символов'
-    }
-    if (requirePassword || payload.password) {
-      if (!payload.password || payload.password.length < 8 || payload.password.length > 128) {
-        return 'Пароль: 8-128 символов'
-      }
     }
     return ''
   }
@@ -572,7 +567,7 @@ function AdminPanel() {
 
   const createUser = async () => {
     clearAdminStatus()
-    const validationError = validateUserForm(newUser, true)
+    const validationError = validateUserForm(newUser)
     if (validationError) {
       setAdminError(validationError)
       return
@@ -593,7 +588,7 @@ function AdminPanel() {
         }),
         successMessage: (data) => `Пользователь ${data.username} добавлен`,
         fallbackError: 'Не удалось добавить пользователя',
-        afterSuccess: () => setNewUser({ username: '', password: '', full_name: '', role: 'employee' }),
+        afterSuccess: () => setNewUser({ username: '', full_name: '', role: 'employee' }),
       }),
     })
   }
@@ -607,8 +602,7 @@ function AdminPanel() {
       role: editUser.role,
       active: editUser.active,
     }
-    if (editUser.password) payload.password = editUser.password
-    const validationError = validateUserForm(payload, false)
+    const validationError = validateUserForm(payload)
     if (validationError) {
       setAdminError(validationError)
       return
@@ -621,7 +615,6 @@ function AdminPanel() {
         ['Имя', payload.full_name || 'Без имени'],
         ['Роль', ROLE_LABELS[payload.role] || payload.role],
         ['Аккаунт', payload.active ? 'активен' : 'отключен'],
-        ['Пароль', payload.password ? 'будет изменен' : 'без изменений'],
       ],
       onConfirm: () => runAdminRequest({
         request: () => fetch(`${API}/users/${editUser.id}`, {
@@ -835,7 +828,6 @@ function AdminPanel() {
             <option value="manager">Менеджер</option>
             <option value="admin">Администратор</option>
           </select>
-          <input value={newUser.password} onChange={(e) => setNewUser({ ...newUser, password: e.target.value })} type="password" placeholder="Пароль" minLength={8} maxLength={128} required />
           <button onClick={createUser}>Добавить</button>
         </div>
         {editUser && (
@@ -848,7 +840,6 @@ function AdminPanel() {
               <option value="manager">Менеджер</option>
               <option value="admin">Администратор</option>
             </select>
-            <input value={editUser.password || ''} onChange={(e) => setEditUser({ ...editUser, password: e.target.value })} type="password" placeholder="Новый пароль" minLength={8} maxLength={128} />
             <label className="checkbox-row">
               <input type="checkbox" checked={editUser.active} onChange={(e) => setEditUser({ ...editUser, active: e.target.checked })} />
               Активен
@@ -867,7 +858,7 @@ function AdminPanel() {
                 <div className="muted">{u.full_name || 'Без имени'} · {u.active ? 'активен' : 'отключен'}</div>
               </div>
               <div className="row">
-                <button onClick={() => { clearAdminStatus(); setEditUser({ ...u, password: '' }) }}>Редактировать</button>
+                <button onClick={() => { clearAdminStatus(); setEditUser({ ...u }) }}>Редактировать</button>
                 <button className="danger" onClick={() => deleteUser(u.id)}>Удалить</button>
               </div>
             </div>

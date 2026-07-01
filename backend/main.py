@@ -4,7 +4,9 @@ from datetime import date, datetime, timedelta, time
 from enum import Enum
 import os
 import secrets
+import ssl
 from typing import Annotated, Optional
+from urllib.parse import urlparse
 import warnings
 from zoneinfo import ZoneInfo
 
@@ -12,15 +14,25 @@ from fastapi import FastAPI, Depends, HTTPException, status
 from fastapi.middleware.cors import CORSMiddleware
 from fastapi.security import OAuth2PasswordBearer, OAuth2PasswordRequestForm
 from jose import jwt, JWTError
-from argon2 import PasswordHasher
-from argon2.exceptions import VerifyMismatchError
+from ldap3 import ALL, SUBTREE, Connection, Server, Tls
+from ldap3.core.exceptions import LDAPException
+from ldap3.utils.conv import escape_filter_chars
 from pydantic import BaseModel, ConfigDict, Field, model_validator
 from sqlalchemy import (
     create_engine, String, Integer, Boolean, Date, DateTime, ForeignKey, select, func, text
 )
 from sqlalchemy.orm import declarative_base, relationship, sessionmaker, Session, Mapped, mapped_column
 
-DATABASE_URL = os.getenv("DATABASE_URL", "sqlite:///./parking.db")
+DATABASE_URL = os.getenv("DATABASE_URL", "postgresql+psycopg://parking:parking@postgres:5432/parking")
+LDAP_URL = os.getenv("LDAP_URL", "")
+LDAP_BIND_DN = os.getenv("LDAP_BIND_DN", "")
+LDAP_BIND_PASSWORD = os.getenv("LDAP_BIND_PASSWORD", "")
+LDAP_USER_SEARCH_BASE = os.getenv("LDAP_USER_SEARCH_BASE", "")
+LDAP_USER_FILTER = os.getenv("LDAP_USER_FILTER", "(sAMAccountName={username})")
+LDAP_USER_FULL_NAME_ATTRIBUTE = os.getenv("LDAP_USER_FULL_NAME_ATTRIBUTE", "displayName")
+LDAP_TLS_VALIDATE = os.getenv("LDAP_TLS_VALIDATE", "true").strip().lower() not in {"0", "false", "no"}
+LDAP_CA_CERT_FILE = os.getenv("LDAP_CA_CERT_FILE", "") or None
+LDAP_CONNECT_TIMEOUT = int(os.getenv("LDAP_CONNECT_TIMEOUT", "5"))
 SECRET_KEY = os.getenv("SECRET_KEY")
 if not SECRET_KEY:
     SECRET_KEY = secrets.token_urlsafe(32)
@@ -32,7 +44,7 @@ if not SECRET_KEY:
     )
 ALGORITHM = "HS256"
 ACCESS_TOKEN_EXPIRE_HOURS = int(os.getenv("ACCESS_TOKEN_EXPIRE_HOURS", "12"))
-DEFAULT_SEED_PASSWORD = os.getenv("DEFAULT_SEED_PASSWORD", "password")
+INITIAL_ADMIN_USERNAMES = [u.strip() for u in os.getenv("INITIAL_ADMIN_USERNAMES", "").split(",") if u.strip()]
 TZ = ZoneInfo(os.getenv("APP_TIME_ZONE", "Europe/Moscow"))
 CORS_ORIGINS = [
     origin.strip()
@@ -46,12 +58,12 @@ CORS_ORIGINS = [
 engine = create_engine(
     DATABASE_URL,
     connect_args={"check_same_thread": False} if DATABASE_URL.startswith("sqlite") else {},
+    pool_pre_ping=True,
     future=True,
 )
 SessionLocal = sessionmaker(bind=engine, autoflush=False, autocommit=False, future=True)
 Base = declarative_base()
 oauth2_scheme = OAuth2PasswordBearer(tokenUrl="/auth/login")
-ph = PasswordHasher()
 
 app = FastAPI(title="Office Parking Booking Service")
 app.add_middleware(
@@ -112,9 +124,9 @@ class AppSetting(Base):
 
 class UserCreate(BaseModel):
     username: str = Field(..., min_length=3, max_length=64, pattern=r"^[A-Za-z0-9_.-]+$")
-    password: str = Field(..., min_length=8, max_length=128)
     full_name: str = Field("", max_length=128)
     role: Role = Role.employee
+    active: bool = True
 
 
 class UserUpdate(BaseModel):
@@ -122,7 +134,6 @@ class UserUpdate(BaseModel):
     full_name: Optional[str] = Field(None, max_length=128)
     role: Optional[Role] = None
     active: Optional[bool] = None
-    password: Optional[str] = Field(None, min_length=8, max_length=128)
 
 
 class UserOut(BaseModel):
@@ -220,15 +231,78 @@ def get_db():
         db.close()
 
 
-def hash_password(password: str) -> str:
-    return ph.hash(password)
+def ldap_server() -> Server:
+    if not LDAP_URL:
+        raise HTTPException(500, "LDAPS ?? ????????: ??????? LDAP_URL")
+    parsed = urlparse(LDAP_URL)
+    use_ssl = parsed.scheme == "ldaps"
+    host = parsed.hostname or LDAP_URL
+    port = parsed.port or (636 if use_ssl else 389)
+    tls = Tls(
+        validate=ssl.CERT_REQUIRED if LDAP_TLS_VALIDATE else ssl.CERT_NONE,
+        ca_certs_file=LDAP_CA_CERT_FILE,
+    )
+    return Server(host, port=port, use_ssl=use_ssl, tls=tls, get_info=ALL, connect_timeout=LDAP_CONNECT_TIMEOUT)
 
-def verify_password(password: str, hashed: str) -> bool:
+
+def authenticate_ldaps(db: Session, username: str, password: str) -> User:
+    if not password:
+        raise HTTPException(status_code=400, detail="???????? ????? ??? ??????")
+    if not LDAP_USER_SEARCH_BASE:
+        raise HTTPException(500, "LDAPS ?? ????????: ??????? LDAP_USER_SEARCH_BASE")
+
+    server = ldap_server()
+    search_filter = LDAP_USER_FILTER.format(username=escape_filter_chars(username))
+    attributes = [LDAP_USER_FULL_NAME_ATTRIBUTE]
+
     try:
-        ph.verify(hashed, password)
-        return True
-    except VerifyMismatchError:
-        return False
+        search_conn = Connection(
+            server,
+            user=LDAP_BIND_DN or None,
+            password=LDAP_BIND_PASSWORD or None,
+            auto_bind=True,
+            receive_timeout=LDAP_CONNECT_TIMEOUT,
+        )
+        search_conn.search(
+            LDAP_USER_SEARCH_BASE,
+            search_filter,
+            search_scope=SUBTREE,
+            attributes=attributes,
+            size_limit=1,
+        )
+        if not search_conn.entries:
+            raise HTTPException(status_code=400, detail="???????? ????? ??? ??????")
+
+        entry = search_conn.entries[0]
+        user_dn = entry.entry_dn
+        values = entry.entry_attributes_as_dict
+        full_names = values.get(LDAP_USER_FULL_NAME_ATTRIBUTE) or []
+        if isinstance(full_names, str):
+            full_name = full_names
+        elif isinstance(full_names, list) and full_names:
+            full_name = full_names[0]
+        else:
+            full_name = username
+        search_conn.unbind()
+
+        user_conn = Connection(server, user=user_dn, password=password, auto_bind=True, receive_timeout=LDAP_CONNECT_TIMEOUT)
+        user_conn.unbind()
+    except HTTPException:
+        raise
+    except LDAPException:
+        raise HTTPException(status_code=400, detail="???????? ????? ??? ??????")
+
+    user = get_user_by_username(db, username)
+    if user:
+        if not user.active:
+            raise HTTPException(status_code=400, detail="???????????? ????????")
+        user.full_name = full_name or user.full_name
+    else:
+        user = User(username=username, password_hash="", full_name=full_name or username, role=Role.employee.value, active=True)
+        db.add(user)
+    db.commit()
+    db.refresh(user)
+    return user
 
 
 def create_token(user: User) -> str:
@@ -511,13 +585,9 @@ def migrate_spots_table():
 def seed_data():
     db = SessionLocal()
     try:
-        if db.scalar(select(func.count(User.id))) == 0:
-            users = [
-                User(username="admin", password_hash=hash_password(DEFAULT_SEED_PASSWORD), full_name="System Admin", role=Role.admin.value),
-                User(username="manager", password_hash=hash_password(DEFAULT_SEED_PASSWORD), full_name="Office Manager", role=Role.manager.value),
-                User(username="employee", password_hash=hash_password(DEFAULT_SEED_PASSWORD), full_name="Regular Employee", role=Role.employee.value),
-            ]
-            db.add_all(users)
+        for username in INITIAL_ADMIN_USERNAMES:
+            if not get_user_by_username(db, username):
+                db.add(User(username=username, password_hash="", full_name=username, role=Role.admin.value, active=True))
         if db.scalar(select(func.count(ParkingSpot.id))) == 0:
             spots = [ParkingSpot(number=i) for i in range(1, 31)]
             db.add_all(spots)
@@ -530,6 +600,8 @@ def seed_data():
 
 @app.get("/health")
 def health():
+    with SessionLocal() as db:
+        db.execute(text("SELECT 1"))
     return {"status": "ok"}
 
 
@@ -538,9 +610,7 @@ def login(
     form: Annotated[OAuth2PasswordRequestForm, Depends()],
     db: Annotated[Session, Depends(get_db)],
 ):
-    user = get_user_by_username(db, form.username)
-    if not user or not user.active or not verify_password(form.password, user.password_hash):
-        raise HTTPException(status_code=400, detail="Неверный логин или пароль")
+    user = authenticate_ldaps(db, form.username, form.password)
     token = create_token(user)
     return TokenOut(access_token=token, user=user_to_out(user))
 
@@ -722,9 +792,10 @@ def create_user(
         raise HTTPException(400, "Пользователь с таким логином уже существует")
     new_user = User(
         username=payload.username,
-        password_hash=hash_password(payload.password),
+        password_hash="",
         full_name=payload.full_name,
         role=payload.role.value,
+        active=payload.active,
     )
     db.add(new_user)
     db.commit()
@@ -752,8 +823,6 @@ def update_user(
         target.role = payload.role.value
     if payload.active is not None:
         target.active = payload.active
-    if payload.password:
-        target.password_hash = hash_password(payload.password)
     db.commit()
     db.refresh(target)
     return user_to_out(target)

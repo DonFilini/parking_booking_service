@@ -31,7 +31,7 @@ class BookingRuleTests(unittest.TestCase):
     def add_user(self, username, role):
         user = self.app.User(
             username=username,
-            password_hash=self.app.hash_password("password"),
+            password_hash="",
             role=role.value,
         )
         self.db.add(user)
@@ -309,7 +309,6 @@ class BookingRuleTests(unittest.TestCase):
         created = self.app.create_user(
             self.app.UserCreate(
                 username="new_employee",
-                password="password",
                 full_name="New Employee",
                 role=self.app.Role.employee,
             ),
@@ -324,9 +323,21 @@ class BookingRuleTests(unittest.TestCase):
         with self.assertRaises(ValueError):
             self.app.SpotCreate(number=0)
         with self.assertRaises(ValueError):
-            self.app.UserCreate(username="no spaces", password="password")
+            self.app.UserCreate(username="no spaces")
         with self.assertRaises(ValueError):
             self.app.BookingCreate(spot_id=1, start_date=date(2026, 6, 10), end_date=date(2026, 6, 9))
+
+    def test_ldap_created_user_gets_employee_role_by_default(self):
+        user = self.app.User(username="ldap_new", password_hash="", full_name="LDAP New", role=self.app.Role.employee.value)
+        self.db.add(user)
+        self.db.commit()
+        self.db.refresh(user)
+
+        self.assertEqual(user.role, self.app.Role.employee.value)
+
+    def test_user_create_can_set_role_manually_without_password(self):
+        payload = self.app.UserCreate(username="manual_manager", full_name="Manual Manager", role=self.app.Role.manager)
+        self.assertEqual(payload.role, self.app.Role.manager)
 
 
 if __name__ == "__main__":
