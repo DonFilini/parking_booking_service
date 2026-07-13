@@ -23,7 +23,9 @@ from sqlalchemy import (
 )
 from sqlalchemy.orm import declarative_base, relationship, sessionmaker, Session, Mapped, mapped_column
 
-DATABASE_URL = os.getenv("DATABASE_URL", "postgresql+psycopg://parking:parking@postgres:5432/parking")
+DATABASE_URL = os.getenv("DATABASE_URL")
+if not DATABASE_URL:
+    raise RuntimeError("DATABASE_URL должен быть задан и должен указывать на общую PostgreSQL-БД")
 LDAP_URL = os.getenv("LDAP_URL", "")
 LDAP_BIND_DN = os.getenv("LDAP_BIND_DN", "")
 LDAP_BIND_PASSWORD = os.getenv("LDAP_BIND_PASSWORD", "")

@@ -1,14 +1,15 @@
 # Сервис бронирования парковки
 
-Сервис бронирования парковочных мест для сотрудников, менеджеров и администратора.
-Проект рассчитан на Docker-развертывание: frontend отдается nginx, backend работает на FastAPI, данные хранятся в PostgreSQL, логин и пароль проверяются только через LDAPS.
+Эта ветка предназначена для развертывания сервиса без собственного контейнера PostgreSQL. Приложение подключается к общей внешней БД PostgreSQL по переменной `DATABASE_URL`.
+
+Frontend отдается nginx, backend работает на FastAPI, логин и пароль проверяются только через LDAPS. Роли пользователей не берутся из LDAP-групп: они хранятся локально в общей PostgreSQL-БД и назначаются администратором вручную.
 
 ## Состав проекта
 
 - `frontend/` - React/Vite SPA: бронирование, администрирование, отчетность.
 - `backend/` - FastAPI REST API: бизнес-правила, JWT-сессии, роли, PostgreSQL, LDAPS.
-- `docker-compose.yml` - запуск сервисов `postgres`, `backend`, `frontend`.
-- `.env.example` - шаблон настроек окружения.
+- `docker-compose.yml` - запуск только `backend` и `frontend`.
+- `.env.example` - шаблон настроек окружения для подключения к общей БД и LDAPS.
 
 ## Схема взаимодействия
 
@@ -16,7 +17,7 @@
 flowchart LR
     U["Браузер пользователя"] -->|HTTP на FRONTEND_PORT| F["frontend: nginx :80"]
     F -->|HTTP /api/* внутри docker network| B["backend: FastAPI :8000"]
-    B -->|PostgreSQL protocol :5432 внутри docker network| P["postgres: PostgreSQL 16"]
+    B -->|PostgreSQL protocol к внешнему хосту| P["Общий PostgreSQL"]
     B -->|LDAPS :636 во внешнюю сеть| L["LDAP/Active Directory"]
 ```
 
@@ -26,16 +27,25 @@ flowchart LR
 |---|---:|---:|---|
 | `frontend` | `80/tcp` | `${FRONTEND_BIND_IP}:${FRONTEND_PORT}` | nginx, SPA, прокси `/api` в backend |
 | `backend` | `8000/tcp` | не публикуется | REST API, JWT, правила бронирования |
-| `postgres` | `5432/tcp` | не публикуется | постоянная БД приложения |
+| общий PostgreSQL | внешний порт БД | адрес из `DATABASE_URL` | постоянное хранение данных |
 | LDAPS | обычно `636/tcp` | внешний адрес `LDAP_URL` | проверка логина и пароля |
 
-Внутренний порт backend `8000` не конфликтует с портом `8000` на сервере, потому что наружу не пробрасывается.
-PostgreSQL тоже не публикуется наружу, к нему обращается только backend по имени Docker-сервиса `postgres`.
+Внутренний порт backend `8000` не конфликтует с портом `8000` на сервере, потому что наружу не пробрасывается. В этой ветке compose не создает PostgreSQL-контейнер и не создает volume для БД.
 
 ## Хранение данных
 
-Основная БД - PostgreSQL в named volume `postgres_data`, путь внутри контейнера PostgreSQL: `/var/lib/postgresql/data`.
-Файл `backend/parking.db` не используется как production-хранилище и может быть только локальным артефактом старой разработки.
+Данные хранятся в общей PostgreSQL-БД, адрес которой задается переменной:
+
+```env
+DATABASE_URL=postgresql+psycopg://user:password@postgres-host:5432/parking
+```
+
+Перед запуском проекта в общей БД должны быть:
+
+- создана сама база данных;
+- создан пользователь БД;
+- выданы права на подключение, создание таблиц и работу с таблицами;
+- разрешен сетевой доступ от Docker-хоста с приложением до PostgreSQL-хоста.
 
 Backend создает таблицы через SQLAlchemy при старте. Полноценной системы миграций пока нет, поэтому изменения структуры БД в будущем нужно планировать отдельно.
 
@@ -68,7 +78,7 @@ LDAPS - единственный способ проверки логина и �
 
 | Метод | Путь | Назначение |
 |---|---|---|
-| `GET` | `/health` | healthcheck backend с проверкой БД |
+| `GET` | `/health` | healthcheck backend с проверкой подключения к БД |
 | `POST` | `/auth/login` | вход через LDAPS, выдача JWT |
 | `GET` | `/auth/me` | текущий пользователь |
 | `GET` | `/spots` | список мест |
@@ -90,9 +100,7 @@ LDAPS - единственный способ проверки логина и �
 | `CORS_ORIGINS` | нет | `http://10.0.0.5:8081` | разрешенные origin для прямого API-доступа |
 | `APP_TIME_ZONE` | нет | `Europe/Moscow` | часовой пояс бизнес-правил |
 | `SECRET_KEY` | да | `openssl rand -hex 32` | подпись JWT |
-| `POSTGRES_DB` | нет | `parking` | имя БД |
-| `POSTGRES_USER` | нет | `parking` | пользователь БД |
-| `POSTGRES_PASSWORD` | да | сильный пароль | пароль PostgreSQL |
+| `DATABASE_URL` | да | `postgresql+psycopg://parking:pass@10.0.0.20:5432/parking` | подключение к общей PostgreSQL-БД |
 | `INITIAL_ADMIN_USERNAMES` | да | `ivanov,petrov` | LDAP-логины первичных администраторов |
 | `LDAP_URL` | да | `ldaps://dc01.example.local:636` | адрес LDAP/AD |
 | `LDAP_BIND_DN` | да | `CN=parking-bind,...` | сервисная учетная запись поиска |
@@ -114,7 +122,7 @@ nano .env
 Минимально заменить:
 
 - `SECRET_KEY`
-- `POSTGRES_PASSWORD`
+- `DATABASE_URL`
 - `INITIAL_ADMIN_USERNAMES`
 - `LDAP_URL`
 - `LDAP_BIND_DN`
@@ -136,20 +144,23 @@ curl -I http://127.0.0.1:${FRONTEND_PORT:-8080}/health
 curl http://127.0.0.1:${FRONTEND_PORT:-8080}/api/health
 ```
 
-Ожидаемо должны быть `running` или `healthy` у `postgres`, `backend`, `frontend`.
+Ожидаемо должны быть `running` или `healthy` у `backend` и `frontend`. Если backend не становится `healthy`, первым делом проверьте доступность общего PostgreSQL из контейнера backend и корректность `DATABASE_URL`.
 
-## Резервное копирование PostgreSQL
+## Проверка доступа к общей БД
 
-```bash
-mkdir -p backups
-docker compose exec -T postgres pg_dump -U "$POSTGRES_USER" -d "$POSTGRES_DB" > backups/parking-$(date +%F-%H%M%S).sql
-```
-
-Восстановление:
+С Docker-хоста:
 
 ```bash
-docker compose exec -T postgres psql -U "$POSTGRES_USER" -d "$POSTGRES_DB" < backups/<backup-file>.sql
+nc -vz postgres-host 5432
 ```
+
+Из backend-контейнера после запуска:
+
+```bash
+docker compose exec backend python -c "import os; from sqlalchemy import create_engine, text; e=create_engine(os.environ['DATABASE_URL']); c=e.connect(); print(c.execute(text('select 1')).scalar()); c.close()"
+```
+
+Команда должна вывести `1`.
 
 ## Обновление
 
@@ -167,17 +178,11 @@ docker compose up -d
 
 ## Остановка
 
-Без удаления данных:
-
 ```bash
 docker compose down
 ```
 
-С удалением PostgreSQL volume и всех данных:
-
-```bash
-docker compose down -v
-```
+В этой ветке `docker compose down -v` не удаляет общую PostgreSQL-БД, потому что compose не управляет ее volume. Но команду все равно стоит использовать осторожно, если в проект позже будут добавлены другие volume.
 
 ## Тесты backend
 
@@ -191,6 +196,6 @@ python -m unittest test_booking_rules.py
 
 - Не коммитить `.env`, дампы БД, backup-файлы и реальные секреты.
 - `SECRET_KEY` должен быть постоянным; при смене ключа старые JWT станут недействительными.
-- Регулярно делать backup PostgreSQL volume.
+- Backup общей PostgreSQL-БД должен выполняться на стороне владельца общей БД или отдельным регламентом.
 - Для LDAPS рекомендуется `LDAP_TLS_VALIDATE=true`.
 - Если используется корпоративный CA, добавьте сертификат в backend-контейнер и укажите путь в `LDAP_CA_CERT_FILE`.
