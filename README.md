@@ -2,7 +2,7 @@
 
 Сервис для бронирования парковочных мест в офисе с ролями `employee`, `manager`, `admin`.
 
-Эта ветка предназначена для развертывания без собственной БД внутри `docker-compose.yml`. Backend подключается к общей внешней PostgreSQL-БД по переменной `DATABASE_URL`. Логин и пароль пользователей проверяются только через LDAPS. Роли пользователей не берутся из LDAP-групп: роли и активность учетных записей хранятся в PostgreSQL и назначаются администратором вручную.
+Эта ветка предназначена для развертывания без собственной БД внутри `docker-compose.yml`. Backend подключается напрямую к общей внешней PostgreSQL-БД через SQLAlchemy по строке `DATABASE_URL`, в которой указаны host, port, database, user и password пользователя БД. Логин и пароль пользователей проверяются только через LDAPS. Роли пользователей не берутся из LDAP-групп: роли и активность учетных записей хранятся в PostgreSQL и назначаются администратором вручную.
 
 Проект состоит из:
 
@@ -34,8 +34,8 @@
   - по умолчанию не публикуется на хост
   - аутентификация: LDAPS -> JWT Bearer token
   |
-  | PostgreSQL wire protocol
-  | DATABASE_URL
+  | прямое подключение к PostgreSQL
+  | DATABASE_URL: host, port, database, user, password
   v
 общая PostgreSQL-БД
 
@@ -54,7 +54,7 @@ LDAP/Active Directory
 | Браузер пользователя -> nginx | HTTP или HTTPS через внешний обратный прокси | Клиент | `http://<host>:${FRONTEND_PORT}` | Интерфейс, статические файлы, API-запросы по пути `/api` |
 | nginx -> backend | HTTP | сервис `frontend` | `backend:8000` в Docker-сети | Обратное проксирование API |
 | JavaScript frontend -> API | HTTP-запрос по пути того же origin | Браузер | `/api/*` | `fetch()`-запросы с заголовком `Authorization: Bearer <jwt>` |
-| backend -> PostgreSQL | PostgreSQL wire protocol | сервис `backend` | адрес из `DATABASE_URL` | Постоянное хранение пользователей, ролей, мест, броней и настроек |
+| backend -> PostgreSQL | прямое подключение к PostgreSQL по `DATABASE_URL` | сервис `backend` | адрес из `DATABASE_URL` | Постоянное хранение пользователей, ролей, мест, броней и настроек |
 | backend -> LDAP/AD | LDAPS | сервис `backend` | адрес из `LDAP_URL` | Проверка логина и пароля пользователя |
 
 ### Порты во время выполнения
