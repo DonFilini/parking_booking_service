@@ -10,6 +10,7 @@
 - `frontend/` - SPA на React/Vite, production-сборка отдается через nginx.
 - `docker-compose.yml` - развертывание двумя контейнерами: `frontend` и `backend`.
 - `.env.example` - шаблон настроек для подключения к общей PostgreSQL-БД и LDAPS.
+- `docs/SWARM_SHARED_GITFLIC.md` - пошаговая инструкция для сборки одного image, публикации в GitFlic Registry и запуска `shared-postgres` в Docker Swarm.
 
 ## Архитектура
 
