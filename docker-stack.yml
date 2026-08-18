@@ -1,6 +1,6 @@
 services:
-  app:
-    image: "${APP_IMAGE:-parking-app:latest}"
+  backend:
+    image: "${BACKEND_IMAGE:?Set BACKEND_IMAGE, for example registry.gitflic.ru/project/<owner>/<project>/parking-backend:1.0.0}"
     environment:
       DATABASE_URL: "${DATABASE_URL:?Set DATABASE_URL for shared PostgreSQL}"
       SECRET_KEY: "${SECRET_KEY:?Set SECRET_KEY. Generate it with openssl rand -hex 32}"
@@ -17,13 +17,8 @@ services:
       LDAP_TLS_VALIDATE: "${LDAP_TLS_VALIDATE:-true}"
       LDAP_CA_CERT_FILE: "${LDAP_CA_CERT_FILE:-}"
       LDAP_CONNECT_TIMEOUT: "${LDAP_CONNECT_TIMEOUT:-5}"
-    ports:
-      - target: 80
-        published: ${FRONTEND_PORT:-8080}
-        protocol: tcp
-        mode: ingress
     healthcheck:
-      test: ["CMD-SHELL", "curl -fsS http://127.0.0.1/api/health >/dev/null || exit 1"]
+      test: ["CMD", "python", "-c", "import urllib.request; urllib.request.urlopen('http://127.0.0.1:8000/health', timeout=3)"]
       interval: 30s
       timeout: 5s
       retries: 3
@@ -32,7 +27,35 @@ services:
       - parking_net
     deploy:
       mode: replicated
-      replicas: ${APP_REPLICAS:-2}
+      replicas: ${BACKEND_REPLICAS:-2}
+      restart_policy:
+        condition: any
+      update_config:
+        parallelism: 1
+        order: start-first
+        failure_action: rollback
+      rollback_config:
+        parallelism: 1
+        order: stop-first
+
+  frontend:
+    image: "${FRONTEND_IMAGE:?Set FRONTEND_IMAGE, for example registry.gitflic.ru/project/<owner>/<project>/parking-frontend:1.0.0}"
+    ports:
+      - target: 80
+        published: ${FRONTEND_PORT:-8080}
+        protocol: tcp
+        mode: ingress
+    healthcheck:
+      test: ["CMD-SHELL", "wget -qO- http://127.0.0.1/health >/dev/null 2>&1 || exit 1"]
+      interval: 30s
+      timeout: 5s
+      retries: 3
+      start_period: 10s
+    networks:
+      - parking_net
+    deploy:
+      mode: replicated
+      replicas: ${FRONTEND_REPLICAS:-2}
       restart_policy:
         condition: any
       update_config:
@@ -46,4 +69,3 @@ services:
 networks:
   parking_net:
     driver: overlay
-
