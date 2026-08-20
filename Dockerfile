@@ -44,4 +44,3 @@ HEALTHCHECK --interval=30s --timeout=5s --retries=3 --start-period=20s \
   CMD python /usr/local/bin/healthcheck-single.py
 
 CMD ["python", "/usr/local/bin/start-single.py"]
-
