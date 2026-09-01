@@ -235,7 +235,7 @@ def get_db():
 
 def ldap_server() -> Server:
     if not LDAP_URL:
-        raise HTTPException(500, "LDAPS ?? ????????: ??????? LDAP_URL")
+        raise HTTPException(500, "LDAPS не настроен: задайте LDAP_URL")
     parsed = urlparse(LDAP_URL)
     use_ssl = parsed.scheme == "ldaps"
     host = parsed.hostname or LDAP_URL
@@ -249,9 +249,9 @@ def ldap_server() -> Server:
 
 def authenticate_ldaps(db: Session, username: str, password: str) -> User:
     if not password:
-        raise HTTPException(status_code=400, detail="???????? ????? ??? ??????")
+        raise HTTPException(status_code=400, detail="Неверный логин или пароль")
     if not LDAP_USER_SEARCH_BASE:
-        raise HTTPException(500, "LDAPS ?? ????????: ??????? LDAP_USER_SEARCH_BASE")
+        raise HTTPException(500, "LDAPS не настроен: задайте LDAP_USER_SEARCH_BASE")
 
     server = ldap_server()
     search_filter = LDAP_USER_FILTER.format(username=escape_filter_chars(username))
@@ -273,7 +273,7 @@ def authenticate_ldaps(db: Session, username: str, password: str) -> User:
             size_limit=1,
         )
         if not search_conn.entries:
-            raise HTTPException(status_code=400, detail="???????? ????? ??? ??????")
+            raise HTTPException(status_code=400, detail="Неверный логин или пароль")
 
         entry = search_conn.entries[0]
         user_dn = entry.entry_dn
@@ -292,12 +292,12 @@ def authenticate_ldaps(db: Session, username: str, password: str) -> User:
     except HTTPException:
         raise
     except LDAPException:
-        raise HTTPException(status_code=400, detail="???????? ????? ??? ??????")
+        raise HTTPException(status_code=400, detail="Неверный логин или пароль")
 
     user = get_user_by_username(db, username)
     if user:
         if not user.active:
-            raise HTTPException(status_code=400, detail="???????????? ????????")
+            raise HTTPException(status_code=400, detail="Пользователь отключен")
         user.full_name = full_name or user.full_name
     else:
         user = User(username=username, password_hash="", full_name=full_name or username, role=Role.employee.value, active=True)
@@ -492,7 +492,7 @@ def ensure_booking_allowed(db: Session, user: User, spot_id: int, start_date: da
     today = get_today()
     role = Role(user.role)
 
-    # ????????????? ????? ??????????? ????? ??????, ??????? ????????.
+    # Администратор может бронировать любые даты, включая выходные.
     if role != Role.admin:
         if not is_business_day(start_date) or not is_business_day(end_date):
             raise HTTPException(400, "Бронирование должно начинаться и заканчиваться в рабочие дни")
@@ -741,7 +741,7 @@ def update_booking(
     spot_id = payload.spot_id if payload.spot_id is not None else booking.spot_id
     start_date = payload.start_date if payload.start_date is not None else booking.start_date
     end_date = payload.end_date if payload.end_date is not None else booking.end_date
-    # ????????????? ????? ????????????? ????? ?????; ??????????? ??????????? ??? ????????? ?????.
+    # Администратор может редактировать любую бронь; проверяем пересечения для выбранного места.
     ensure_booking_integrity(
         db,
         booking.user_id,
